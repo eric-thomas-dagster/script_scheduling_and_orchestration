@@ -28,7 +28,12 @@ ENV/
 
 # Dagster
 .tmp_dagster_home*/
+.dagster_home/
 dagster_home/
+dagster.yaml
+storage/
+.telemetry/
+.nux/
 *.db
 *.db-shm
 *.db-wal

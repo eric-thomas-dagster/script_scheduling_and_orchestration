@@ -20,6 +20,9 @@ dependencies = [
     "prefect>=3.0.0",
     "requests",
     "beautifulsoup4",
+    "dagster-webserver>=1.12.14",
+    "dagster-dg-cli>=1.12.14",
+    "griffe>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +36,15 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [tool.dg]
+directory_type = "project"
+
+[tool.dg.project]
 root_module = "script_orchestrator"
 
 [tool.setuptools.packages.find]
 exclude=["script_orchestrator_tests"]
+
+[dependency-groups]
+dev = [
+    "dagster-webserver>=1.12.14",
+]
