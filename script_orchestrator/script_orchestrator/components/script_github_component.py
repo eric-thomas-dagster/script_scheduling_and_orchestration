@@ -768,10 +768,30 @@ class ScriptGithubComponent(Component):
 
             help_text = param.get('help', f'Parameter from {source}')
             if is_list_type:
-                defaults[param_name] = PydanticField(
-                    default=None,
-                    description=help_text or f"List parameter (default in script will be used if not provided)"
-                )
+                # For list types, try to use the actual default value
+                default_desc = help_text or f"List parameter"
+                if default_value is not None:
+                    import json
+                    try:
+                        default_str = json.dumps(default_value)
+                        default_desc += f" (default: {default_str})"
+                        # Try using the actual default value for Optional[List] types
+                        defaults[param_name] = PydanticField(
+                            default=default_value if isinstance(default_value, list) else None,
+                            description=default_desc
+                        )
+                    except:
+                        default_desc += f" (default: {default_value})"
+                        defaults[param_name] = PydanticField(
+                            default=None,
+                            description=default_desc
+                        )
+                else:
+                    default_desc += " (no default - must be provided)"
+                    defaults[param_name] = PydanticField(
+                        default=None,
+                        description=default_desc
+                    )
             elif default_value is not None:
                 defaults[param_name] = default_value
             else:
