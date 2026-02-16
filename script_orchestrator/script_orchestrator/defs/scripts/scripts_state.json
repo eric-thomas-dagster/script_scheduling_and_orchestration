@@ -56,6 +56,35 @@
       }
     },
     {
+      "name": "test_simple_prefect",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_simple_prefect.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_simple_prefect.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "prefect",
+        "description": "Simple Prefect pipeline for testing graph asset mapping",
+        "group_name": "test_examples",
+        "owners": [],
+        "tags": {
+          "type": "test",
+          "demonstrates": "prefect_graph_mapping"
+        },
+        "kinds": [
+          "python",
+          "prefect"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": {
+          "enabled": true,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null
+      }
+    },
+    {
       "name": "test_argparse",
       "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_argparse.py",
       "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_argparse.yaml",
@@ -506,7 +535,7 @@
       }
     }
   ],
-  "repo_commit": "local",
-  "repo_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts",
+  "repo_commit": null,
+  "repo_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator",
   "error": null
 }

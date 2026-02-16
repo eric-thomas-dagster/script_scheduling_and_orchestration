@@ -797,25 +797,65 @@ class ScriptGithubComponent(Component):
     # ===== Prefect Graph Asset Creation Methods =====
 
     def _create_prefect_flow_graph_asset(
-        self, flow_info: Dict, tasks_info: List[Dict], script_info: ScriptInfo, 
+        self, flow_info: Dict, tasks_info: List[Dict], script_info: ScriptInfo,
         metadata: ScriptMetadata, repo_path: str
     ):
         """Create a graph-backed asset for a Prefect flow."""
+        import importlib.util
+
         flow_name = flow_info['name']
         task_calls = flow_info['task_calls']
         has_complex_patterns = flow_info['has_complex_patterns']
-        
+        flow_params = flow_info.get('parameters', [])
+
         # If flow has complex patterns, return None to fall back to subprocess
         if has_complex_patterns:
             logger.info(f"Flow {flow_name} has complex patterns (.map()), falling back to subprocess")
             return None
-        
-        # Create ops for each task
+
+        # Check if this is a simple sequential flow (each task called once, in order)
+        task_call_counts = {}
+        for task_call in task_calls:
+            task_name = task_call['task_name']
+            task_call_counts[task_name] = task_call_counts.get(task_name, 0) + 1
+
+        # If any task is called more than once, fall back to subprocess
+        if any(count > 1 for count in task_call_counts.values()):
+            logger.info(f"Flow {flow_name} has tasks called multiple times, falling back to subprocess")
+            return None
+
+        # Try to import the script module to get actual task functions
+        try:
+            spec = importlib.util.spec_from_file_location("prefect_module", str(script_info.script_path))
+            if spec is None or spec.loader is None:
+                logger.warning(f"Could not load spec for {script_info.script_path}")
+                return None
+
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+
+            # Get task functions from the module
+            task_functions = {}
+            for task_info in tasks_info:
+                task_name = task_info['name']
+                if hasattr(module, task_name):
+                    task_functions[task_name] = getattr(module, task_name)
+                else:
+                    logger.warning(f"Task function {task_name} not found in module")
+                    return None
+
+        except Exception as e:
+            logger.warning(f"Could not import Prefect module {script_info.script_path}: {e}")
+            return None
+
+        # Create ops for each task that actually call the Prefect task functions
         ops_dict = {}
         for task_info in tasks_info:
             task_name = task_info['name']
+            task_func = task_functions[task_name]
+            task_params = task_info.get('parameters', [])
             retry_config = task_info.get('retry_config', {})
-            
+
             # Create retry policy for op
             retry_policy = None
             if retry_config.get('retries', 0) > 0:
@@ -823,21 +863,35 @@ class ScriptGithubComponent(Component):
                     max_retries=retry_config['retries'],
                     delay=retry_config.get('retry_delay_seconds', 0),
                 )
-            
-            # Create op function
-            @op(
-                name=f"{script_info.name}_{task_name}",
-                retry_policy=retry_policy,
-            )
-            def task_op(context: OpExecutionContext):
-                """Execute Prefect task via subprocess."""
-                logger.info(f"Executing task: {task_name}")
-                # For now, we can't isolate individual tasks, so this is a placeholder
-                # Real implementation would need to import and call the task function
-                return {"task": task_name, "status": "completed"}
-            
-            ops_dict[task_name] = task_op
-        
+
+            # Capture the task function in closure
+            def make_task_op(tf, tn, params):
+                @op(
+                    name=f"{script_info.name}_{tn}",
+                    retry_policy=retry_policy,
+                )
+                def task_op(context: OpExecutionContext, input_data=None):
+                    """Execute Prefect task function."""
+                    context.log.info(f"Executing Prefect task: {tn}")
+
+                    # Call the task function with appropriate arguments
+                    if input_data is not None and len(params) > 0:
+                        # Pass input data as first parameter
+                        result = tf(input_data)
+                    elif len(params) > 0 and params[0].get('default') is not None:
+                        # Use default value for first parameter
+                        result = tf(params[0]['default'])
+                    else:
+                        # No parameters or no input
+                        result = tf()
+
+                    context.log.info(f"Task {tn} completed with result type: {type(result).__name__}")
+                    return result
+
+                return task_op
+
+            ops_dict[task_name] = make_task_op(task_func, task_name, task_params)
+
         # Build asset tags
         asset_tags = {
             **metadata.tags,
@@ -847,8 +901,8 @@ class ScriptGithubComponent(Component):
         }
         for kind in metadata.kinds:
             asset_tags[f"dagster/kind/{kind}"] = ""
-        
-        # Create graph asset
+
+        # Create graph asset that wires ops together sequentially
         @graph_asset(
             name=f"script_{script_info.name}",
             group_name=metadata.group_name,
@@ -857,16 +911,21 @@ class ScriptGithubComponent(Component):
         )
         def flow_graph():
             """Execute Prefect flow as graph of ops."""
-            # Build execution graph based on task_calls
-            results = {}
+            # Wire ops together in sequence based on task_calls
+            result = None
             for task_call in task_calls:
                 task_name = task_call['task_name']
                 if task_name in ops_dict:
-                    # Execute the op
-                    results[task_name] = ops_dict[task_name]()
-            
-            return results
-        
+                    if result is None:
+                        # First task in the chain
+                        result = ops_dict[task_name]()
+                    else:
+                        # Subsequent tasks use previous result as input
+                        result = ops_dict[task_name](result)
+
+            # Return the final result
+            return result
+
         return flow_graph
 
     def _build_script_asset_with_prefect_check(
