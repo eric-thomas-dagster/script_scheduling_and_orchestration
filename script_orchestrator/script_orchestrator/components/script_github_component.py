@@ -813,6 +813,11 @@ class ScriptGithubComponent(Component):
             logger.info(f"Flow {flow_name} has complex patterns (.map()), falling back to subprocess")
             return None
 
+        # If flow has parameters, fall back to subprocess for Launchpad config support
+        if flow_params:
+            logger.info(f"Flow {flow_name} has {len(flow_params)} parameters, falling back to subprocess for config support")
+            return None
+
         # Check if this is a simple sequential flow (each task called once, in order)
         task_call_counts = {}
         for task_call in task_calls:
