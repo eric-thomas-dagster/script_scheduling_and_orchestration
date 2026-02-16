@@ -1,0 +1,52 @@
+# Template for script.yaml configuration files
+# Copy this file and rename it to match your Python script
+# Example: my_script.py -> my_script.yaml
+
+# Whether this script is enabled (default: true)
+enabled: true
+
+# Human-readable description
+description: "Brief description of what this script does"
+
+# Asset group name for organization in Dagster UI
+group: default  # Examples: data_pipeline, reporting, maintenance, etc.
+
+# List of owner emails
+owners:
+  - team@company.com
+
+# Custom tags for filtering and organization
+tags:
+  environment: production  # dev, staging, production
+  team: data-engineering
+  priority: high
+
+# Asset kinds for icons in Dagster UI
+kinds:
+  - python  # Shows Python icon
+
+# Script dependencies - list names of other scripts this depends on
+# Use script names WITHOUT the "script_" prefix
+depends_on:
+  - other_script_name
+  - another_dependency
+
+# Schedule configuration
+schedule:
+  # Cron expression (use https://crontab.guru for help)
+  cron_schedule: "0 2 * * *"  # Daily at 2am UTC
+  # Timezone
+  timezone: "UTC"  # Or America/New_York, Europe/London, etc.
+  # Default status when schedule is created
+  default_status: "RUNNING"  # or "STOPPED"
+
+# Retry configuration
+retry_policy:
+  # Maximum number of retries
+  max_retries: 3
+  # Initial delay between retries (seconds)
+  delay: 60
+  # Backoff strategy: LINEAR or EXPONENTIAL
+  backoff: "EXPONENTIAL"
+  # Optional jitter: FULL or PLUS_MINUS
+  jitter: "FULL"

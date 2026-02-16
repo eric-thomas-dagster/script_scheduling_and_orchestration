@@ -1,0 +1,20 @@
+enabled: true
+description: "Extracts data from source API/database"
+group: data_pipeline
+owners:
+  - data-team@company.com
+tags:
+  environment: demo
+  team: data-engineering
+kinds:
+  - python
+
+schedule:
+  cron_schedule: "0 2 * * *"  # Run daily at 2am
+  timezone: "UTC"
+  default_status: "RUNNING"
+
+retry_policy:
+  max_retries: 3
+  delay: 60
+  backoff: "EXPONENTIAL"

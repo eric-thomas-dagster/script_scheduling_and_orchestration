@@ -1,0 +1,9 @@
+enabled: true
+script_type: python
+description: "Test script with argparse parameters"
+group: test_examples
+tags:
+  type: test
+  demonstrates: argparse_config
+kinds:
+  - python

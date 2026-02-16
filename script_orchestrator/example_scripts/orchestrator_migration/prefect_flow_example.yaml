@@ -1,0 +1,29 @@
+enabled: true
+script_type: prefect
+description: "Prefect flow showing existing Prefect code running in Dagster"
+group: prefect_migration
+owners:
+  - data-team@company.com
+tags:
+  environment: demo
+  migration_source: prefect
+  team: data-engineering
+kinds:
+  - python
+  - prefect
+
+schedule:
+  cron_schedule: "0 */6 * * *"  # Every 6 hours
+  timezone: "UTC"
+  default_status: "STOPPED"  # Demo only, don't auto-run
+
+retry_policy:
+  max_retries: 2
+  delay: 30
+  backoff: "LINEAR"
+
+# Enable Prefect → Dagster mapping for task-level visibility
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true  # If parsing fails, run as subprocess
+  mode: "graph_asset"  # Use @graph_asset (recommended)

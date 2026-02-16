@@ -1,0 +1,16 @@
+enabled: true
+script_type: prefect
+description: "Simple Prefect .map() example - demonstrates dynamic parallel execution"
+group: prefect_migration
+tags:
+  pattern: simple_map
+  complexity: simple
+  demonstrates: dynamic_mapping
+kinds:
+  - python
+  - prefect
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true
+  mode: "graph_asset"

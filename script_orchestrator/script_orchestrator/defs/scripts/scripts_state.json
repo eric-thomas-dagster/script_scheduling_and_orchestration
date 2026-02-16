@@ -1,0 +1,512 @@
+{
+  "scripts": [
+    {
+      "name": "test_sys_argv",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_sys_argv.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_sys_argv.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "python",
+        "description": "Test script with sys.argv parameters",
+        "group_name": "test_examples",
+        "owners": [],
+        "tags": {
+          "type": "test",
+          "demonstrates": "sys_argv_config"
+        },
+        "kinds": [
+          "python"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "partition": null
+      }
+    },
+    {
+      "name": "test_partitioned",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_partitioned.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_partitioned.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "python",
+        "description": "Daily data processing script with date partitioning",
+        "group_name": "test_examples",
+        "owners": [],
+        "tags": {
+          "type": "test",
+          "demonstrates": "partitioned_asset",
+          "schedule": "daily"
+        },
+        "kinds": [
+          "python"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "partition": {
+          "parameter": "date",
+          "schedule": "daily",
+          "start_date": "2024-01-01",
+          "timezone": "America/New_York",
+          "date_format": "%Y-%m-%d"
+        }
+      }
+    },
+    {
+      "name": "test_argparse",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_argparse.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/test_argparse.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "python",
+        "description": "Test script with argparse parameters",
+        "group_name": "test_examples",
+        "owners": [],
+        "tags": {
+          "type": "test",
+          "demonstrates": "argparse_config"
+        },
+        "kinds": [
+          "python"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "partition": null
+      }
+    },
+    {
+      "name": "hello_world",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/hello_world.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/hello_world.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "prefect",
+        "description": "Simple Prefect flow with no tasks - testing flow-only pattern",
+        "group_name": "prefect_migration",
+        "owners": [],
+        "tags": {
+          "pattern": "flow_only",
+          "complexity": "simple"
+        },
+        "kinds": [
+          "python",
+          "prefect"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": {
+          "enabled": true,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null
+      }
+    },
+    {
+      "name": "conditionally_retry_with_delay",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/conditionally_retry_with_delay.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/conditionally_retry_with_delay.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "prefect",
+        "description": "Prefect task with no flow - testing task-only pattern",
+        "group_name": "prefect_migration",
+        "owners": [],
+        "tags": {
+          "pattern": "task_only",
+          "complexity": "simple"
+        },
+        "kinds": [
+          "python",
+          "prefect"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": {
+          "enabled": true,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null
+      }
+    },
+    {
+      "name": "02_simple_web_scraper",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/02_simple_web_scraper.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/02_simple_web_scraper.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "prefect",
+        "description": "Prefect web scraper - sequential tasks with retries",
+        "group_name": "prefect_examples",
+        "owners": [],
+        "tags": {
+          "source": "prefect_getting_started",
+          "pattern": "sequential_with_retries",
+          "demonstrates": "retry_extraction"
+        },
+        "kinds": [
+          "python",
+          "prefect"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": {
+          "enabled": true,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null
+      }
+    },
+    {
+      "name": "01_hello_world",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/01_hello_world.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/01_hello_world.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "prefect",
+        "description": "Prefect getting started - hello world (flow only, no tasks)",
+        "group_name": "prefect_examples",
+        "owners": [],
+        "tags": {
+          "source": "prefect_getting_started",
+          "pattern": "flow_only"
+        },
+        "kinds": [
+          "python",
+          "prefect"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": {
+          "enabled": true,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null
+      }
+    },
+    {
+      "name": "local_concurrency_with_task_runner",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/local_concurrency_with_task_runner.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/local_concurrency_with_task_runner.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "prefect",
+        "description": "Prefect flow with .map() for parallel task execution - testing concurrency pattern",
+        "group_name": "prefect_migration",
+        "owners": [],
+        "tags": {
+          "pattern": "concurrent_tasks",
+          "complexity": "intermediate"
+        },
+        "kinds": [
+          "python",
+          "prefect"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": {
+          "enabled": true,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null
+      }
+    },
+    {
+      "name": "simple_map_example",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/simple_map_example.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/simple_map_example.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "prefect",
+        "description": "Simple Prefect .map() example - demonstrates dynamic parallel execution",
+        "group_name": "prefect_migration",
+        "owners": [],
+        "tags": {
+          "pattern": "simple_map",
+          "complexity": "simple",
+          "demonstrates": "dynamic_mapping"
+        },
+        "kinds": [
+          "python",
+          "prefect"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": {
+          "enabled": true,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null
+      }
+    },
+    {
+      "name": "prefect_flow_example",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/prefect_flow_example.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/prefect_flow_example.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "prefect",
+        "description": "Prefect flow showing existing Prefect code running in Dagster",
+        "group_name": "prefect_migration",
+        "owners": [
+          "data-team@company.com"
+        ],
+        "tags": {
+          "environment": "demo",
+          "migration_source": "prefect",
+          "team": "data-engineering"
+        },
+        "kinds": [
+          "python",
+          "prefect"
+        ],
+        "depends_on": [],
+        "schedule": {
+          "cron_schedule": "0 */6 * * *",
+          "timezone": "UTC",
+          "default_status": "STOPPED"
+        },
+        "retry_policy": {
+          "max_retries": 2,
+          "delay": 30,
+          "backoff": "LINEAR",
+          "jitter": null
+        },
+        "prefect_mapping": {
+          "enabled": true,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null
+      }
+    },
+    {
+      "name": "03_run_api_sourced_etl",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/03_run_api_sourced_etl.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/orchestrator_migration/03_run_api_sourced_etl.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "prefect",
+        "description": "Prefect API ETL - sequential tasks with exponential backoff",
+        "group_name": "prefect_examples",
+        "owners": [],
+        "tags": {
+          "source": "prefect_getting_started",
+          "pattern": "sequential_etl",
+          "demonstrates": "exponential_backoff"
+        },
+        "kinds": [
+          "python",
+          "prefect"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": {
+          "enabled": true,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null
+      }
+    },
+    {
+      "name": "dask_analysis_example",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/distributed_compute/dask_analysis_example.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/distributed_compute/dask_analysis_example.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "dask",
+        "description": "Dask analysis for parallel order book processing",
+        "group_name": "distributed_compute",
+        "owners": [
+          "quant-team@company.com"
+        ],
+        "tags": {
+          "environment": "production",
+          "compute_type": "dask",
+          "use_case": "market_maker_rules"
+        },
+        "kinds": [
+          "python",
+          "dask"
+        ],
+        "depends_on": [
+          "spark_job_example"
+        ],
+        "schedule": null,
+        "retry_policy": {
+          "max_retries": 2,
+          "delay": 60,
+          "backoff": "LINEAR",
+          "jitter": null
+        },
+        "prefect_mapping": null,
+        "partition": null
+      }
+    },
+    {
+      "name": "spark_job_example",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/distributed_compute/spark_job_example.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/distributed_compute/spark_job_example.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "spark",
+        "description": "Spark job for large-scale data processing (market maker rules)",
+        "group_name": "distributed_compute",
+        "owners": [
+          "data-eng@company.com"
+        ],
+        "tags": {
+          "environment": "production",
+          "compute_type": "spark",
+          "team": "data-engineering"
+        },
+        "kinds": [
+          "spark"
+        ],
+        "depends_on": [
+          "extract_data"
+        ],
+        "schedule": null,
+        "retry_policy": {
+          "max_retries": 3,
+          "delay": 120,
+          "backoff": "EXPONENTIAL",
+          "jitter": "FULL"
+        },
+        "prefect_mapping": null,
+        "partition": null
+      }
+    },
+    {
+      "name": "generate_report",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/basic_python/generate_report.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/basic_python/generate_report.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "python",
+        "description": "Generates summary report from transformed data",
+        "group_name": "reporting",
+        "owners": [
+          "reporting-team@company.com"
+        ],
+        "tags": {
+          "environment": "demo",
+          "team": "reporting"
+        },
+        "kinds": [
+          "python"
+        ],
+        "depends_on": [
+          "transform_data"
+        ],
+        "schedule": {
+          "cron_schedule": "0 4 * * *",
+          "timezone": "UTC",
+          "default_status": "RUNNING"
+        },
+        "retry_policy": {
+          "max_retries": 1,
+          "delay": 15,
+          "backoff": "LINEAR",
+          "jitter": null
+        },
+        "prefect_mapping": null,
+        "partition": null
+      }
+    },
+    {
+      "name": "transform_data",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/basic_python/transform_data.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/basic_python/transform_data.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "python",
+        "description": "Transforms extracted data for analysis",
+        "group_name": "data_pipeline",
+        "owners": [
+          "data-team@company.com"
+        ],
+        "tags": {
+          "environment": "demo",
+          "team": "data-engineering"
+        },
+        "kinds": [
+          "python",
+          "dbt"
+        ],
+        "depends_on": [
+          "extract_data"
+        ],
+        "schedule": {
+          "cron_schedule": "0 3 * * *",
+          "timezone": "UTC",
+          "default_status": "RUNNING"
+        },
+        "retry_policy": {
+          "max_retries": 2,
+          "delay": 30,
+          "backoff": "LINEAR",
+          "jitter": null
+        },
+        "prefect_mapping": null,
+        "partition": null
+      }
+    },
+    {
+      "name": "extract_data",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/basic_python/extract_data.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/basic_python/extract_data.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "python",
+        "description": "Extracts data from source API/database",
+        "group_name": "data_pipeline",
+        "owners": [
+          "data-team@company.com"
+        ],
+        "tags": {
+          "environment": "demo",
+          "team": "data-engineering"
+        },
+        "kinds": [
+          "python"
+        ],
+        "depends_on": [],
+        "schedule": {
+          "cron_schedule": "0 2 * * *",
+          "timezone": "UTC",
+          "default_status": "RUNNING"
+        },
+        "retry_policy": {
+          "max_retries": 3,
+          "delay": 60,
+          "backoff": "EXPONENTIAL",
+          "jitter": null
+        },
+        "prefect_mapping": null,
+        "partition": null
+      }
+    }
+  ],
+  "repo_commit": "local",
+  "repo_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts",
+  "error": null
+}

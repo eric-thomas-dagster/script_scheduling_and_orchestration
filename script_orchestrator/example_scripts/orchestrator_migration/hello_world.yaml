@@ -1,0 +1,15 @@
+enabled: true
+script_type: prefect
+description: "Simple Prefect flow with no tasks - testing flow-only pattern"
+group: prefect_migration
+tags:
+  pattern: flow_only
+  complexity: simple
+kinds:
+  - python
+  - prefect
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true
+  mode: "graph_asset"

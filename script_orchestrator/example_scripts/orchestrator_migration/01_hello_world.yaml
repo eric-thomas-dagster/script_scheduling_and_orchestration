@@ -1,0 +1,15 @@
+enabled: true
+script_type: prefect
+description: "Prefect getting started - hello world (flow only, no tasks)"
+group: prefect_examples
+tags:
+  source: prefect_getting_started
+  pattern: flow_only
+kinds:
+  - python
+  - prefect
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true
+  mode: "graph_asset"

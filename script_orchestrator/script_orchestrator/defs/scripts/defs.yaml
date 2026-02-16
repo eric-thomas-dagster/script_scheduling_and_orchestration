@@ -1,0 +1,5 @@
+type: script_orchestrator.components.ScriptGithubComponent
+
+attributes:
+  use_local: true
+  scripts_directory: "example_scripts"

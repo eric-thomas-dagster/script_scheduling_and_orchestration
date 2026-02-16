@@ -1,0 +1,16 @@
+enabled: true
+script_type: prefect
+description: "Prefect API ETL - sequential tasks with exponential backoff"
+group: prefect_examples
+tags:
+  source: prefect_getting_started
+  pattern: sequential_etl
+  demonstrates: exponential_backoff
+kinds:
+  - python
+  - prefect
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true
+  mode: "graph_asset"

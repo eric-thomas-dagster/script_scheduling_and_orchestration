@@ -1,0 +1,22 @@
+enabled: true
+script_type: dask
+description: "Dask analysis for parallel order book processing"
+group: distributed_compute
+owners:
+  - quant-team@company.com
+tags:
+  environment: production
+  compute_type: dask
+  use_case: market_maker_rules
+kinds:
+  - python
+  - dask
+
+depends_on:
+  - spark_job_example  # Runs after Spark aggregation
+
+# Event-driven via sensor, not scheduled
+retry_policy:
+  max_retries: 2
+  delay: 60
+  backoff: "LINEAR"

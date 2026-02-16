@@ -1,0 +1,15 @@
+enabled: true
+script_type: prefect
+description: "Prefect flow with .map() for parallel task execution - testing concurrency pattern"
+group: prefect_migration
+tags:
+  pattern: concurrent_tasks
+  complexity: intermediate
+kinds:
+  - python
+  - prefect
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true
+  mode: "graph_asset"

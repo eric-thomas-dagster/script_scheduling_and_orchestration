@@ -1,0 +1,16 @@
+enabled: true
+script_type: prefect
+description: "Prefect web scraper - sequential tasks with retries"
+group: prefect_examples
+tags:
+  source: prefect_getting_started
+  pattern: sequential_with_retries
+  demonstrates: retry_extraction
+kinds:
+  - python
+  - prefect
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true
+  mode: "graph_asset"

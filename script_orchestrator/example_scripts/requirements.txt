@@ -1,0 +1,12 @@
+# Example script dependencies
+# These will be automatically installed when Dagster discovers the scripts
+
+# Already installed in main project, but shown as examples:
+prefect>=3.0.0
+requests
+beautifulsoup4
+
+# Add any other dependencies your scripts need here
+# httpx
+# pandas
+# numpy

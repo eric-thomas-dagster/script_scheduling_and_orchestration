@@ -1,0 +1,25 @@
+enabled: true
+description: "Transforms extracted data for analysis"
+group: data_pipeline
+owners:
+  - data-team@company.com
+tags:
+  environment: demo
+  team: data-engineering
+kinds:
+  - python
+  - dbt  # Just for demo - showing you can use kinds for icons
+
+# This script depends on extract_data
+depends_on:
+  - extract_data
+
+schedule:
+  cron_schedule: "0 3 * * *"  # Run daily at 3am (after extraction)
+  timezone: "UTC"
+  default_status: "RUNNING"
+
+retry_policy:
+  max_retries: 2
+  delay: 30
+  backoff: "LINEAR"

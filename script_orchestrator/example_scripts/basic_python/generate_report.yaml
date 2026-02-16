@@ -1,0 +1,24 @@
+enabled: true
+description: "Generates summary report from transformed data"
+group: reporting
+owners:
+  - reporting-team@company.com
+tags:
+  environment: demo
+  team: reporting
+kinds:
+  - python
+
+# This script depends on transform_data (which in turn depends on extract_data)
+depends_on:
+  - transform_data
+
+schedule:
+  cron_schedule: "0 4 * * *"  # Run daily at 4am (after transformation)
+  timezone: "UTC"
+  default_status: "RUNNING"
+
+retry_policy:
+  max_retries: 1
+  delay: 15
+  backoff: "LINEAR"

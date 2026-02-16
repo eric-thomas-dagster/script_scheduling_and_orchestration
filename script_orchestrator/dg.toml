@@ -1,0 +1,4 @@
+directory_type = "project"
+
+[project]
+root_module = "script_orchestrator"

@@ -1,0 +1,6 @@
+attributes:
+  github_token: ${GITHUB_TOKEN}
+  repo_branch: ${SCRIPTS_REPO_BRANCH}
+  repo_url: ${SCRIPTS_REPO_URL}
+  scripts_directory: ${SCRIPTS_DIR}
+  use_local: ${USE_LOCAL_SCRIPTS}
