@@ -902,7 +902,15 @@ class ScriptGithubComponent(Component):
         for kind in metadata.kinds:
             asset_tags[f"dagster/kind/{kind}"] = ""
 
-        # Create graph asset that wires ops together sequentially
+        # Create ops list in the order they should be called
+        ops_list = [ops_dict[tc['task_name']] for tc in task_calls if tc['task_name'] in ops_dict]
+
+        if not ops_list:
+            logger.warning(f"No ops created for flow {flow_name}")
+            return None
+
+        # Create graph asset that explicitly calls ops in sequence
+        # We need to build this dynamically so Dagster can statically analyze it
         @graph_asset(
             name=f"script_{script_info.name}",
             group_name=metadata.group_name,
@@ -911,20 +919,32 @@ class ScriptGithubComponent(Component):
         )
         def flow_graph():
             """Execute Prefect flow as graph of ops."""
-            # Wire ops together in sequence based on task_calls
-            result = None
-            for task_call in task_calls:
-                task_name = task_call['task_name']
-                if task_name in ops_dict:
-                    if result is None:
-                        # First task in the chain
-                        result = ops_dict[task_name]()
-                    else:
-                        # Subsequent tasks use previous result as input
-                        result = ops_dict[task_name](result)
-
-            # Return the final result
-            return result
+            # Build the op call chain based on number of ops
+            # This explicit structure allows Dagster to see the ops
+            if len(ops_list) == 1:
+                return ops_list[0]()
+            elif len(ops_list) == 2:
+                result = ops_list[0]()
+                return ops_list[1](result)
+            elif len(ops_list) == 3:
+                result = ops_list[0]()
+                result = ops_list[1](result)
+                return ops_list[2](result)
+            elif len(ops_list) == 4:
+                result = ops_list[0]()
+                result = ops_list[1](result)
+                result = ops_list[2](result)
+                return ops_list[3](result)
+            elif len(ops_list) == 5:
+                result = ops_list[0]()
+                result = ops_list[1](result)
+                result = ops_list[2](result)
+                result = ops_list[3](result)
+                return ops_list[4](result)
+            else:
+                # For flows with more than 5 tasks, fall back to subprocess
+                logger.info(f"Flow {flow_name} has {len(ops_list)} ops, which is too many for explicit wiring")
+                return None
 
         return flow_graph
 
