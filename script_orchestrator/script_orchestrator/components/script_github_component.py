@@ -875,14 +875,19 @@ class ScriptGithubComponent(Component):
                     context.log.info(f"Executing Prefect task: {tn}")
 
                     # Call the task function with appropriate arguments
-                    if input_data is not None and len(params) > 0:
-                        # Pass input data as first parameter
-                        result = tf(input_data)
-                    elif len(params) > 0 and params[0].get('default') is not None:
-                        # Use default value for first parameter
-                        result = tf(params[0]['default'])
-                    else:
-                        # No parameters or no input
+                    try:
+                        if input_data is not None:
+                            # Pass input data as positional argument
+                            result = tf(input_data)
+                        elif len(params) > 0 and params[0].get('default') is not None:
+                            # Use default value for first parameter
+                            result = tf(params[0]['default'])
+                        else:
+                            # No parameters or no input - call with no args
+                            result = tf()
+                    except TypeError as e:
+                        # If parameter binding fails, try without arguments
+                        context.log.warning(f"Parameter binding failed: {e}, trying without arguments")
                         result = tf()
 
                     context.log.info(f"Task {tn} completed with result type: {type(result).__name__}")
