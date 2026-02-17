@@ -23,7 +23,7 @@ import yaml
 
 from .parsers import AirflowParser, PrefectParser
 from .parsers.dag_factory_parser import DagFactoryYamlParser
-from .utils import AssetCheckGenerator, DocumentationExtractor, PerformanceMonitor
+from .utils import AssetCheckGenerator, DocumentationExtractor, PerformanceMonitor, ResourceDetector
 
 logger = logging.getLogger(__name__)
 from dagster import (
@@ -466,6 +466,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         all_sensors = []
         all_schedules = []
         all_asset_checks = []
+        detected_resources = {}  # resource_name -> resource_info
 
         # Build script assets
         for script_info in state.scripts:
@@ -492,8 +493,23 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 # Single asset definition
                 all_assets.append(result)
 
-                # Extract and create asset checks for Python scripts
+                # Detect resources and extract checks for Python scripts
                 if script_info.script_path.suffix == '.py':
+                    # Resource detection
+                    try:
+                        resources = ResourceDetector.detect_resources_from_file(script_info.script_path)
+
+                        if resources:
+                            for resource in resources:
+                                resource_name = resource['resource_name']
+                                if resource_name not in detected_resources:
+                                    detected_resources[resource_name] = resource
+                                    logger.info(f"🔧 Detected {resource['resource_type']} resource: {resource_name}")
+
+                    except Exception as e:
+                        logger.debug(f"Could not detect resources from {script_info.name}: {e}")
+
+                    # Asset checks
                     try:
                         checks = AssetCheckGenerator.extract_checks_from_file(
                             script_info.script_path,
@@ -529,6 +545,26 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             f"{len(all_sensors)} sensors, {len(all_schedules)} schedules, "
             f"and {len(all_asset_checks)} asset checks"
         )
+
+        # Log detected resources
+        if detected_resources:
+            logger.info(f"🔧 Detected {len(detected_resources)} unique resources:")
+            for resource_name, resource_info in detected_resources.items():
+                logger.info(f"  - {resource_name} ({resource_info['resource_type']}): "
+                           f"from {resource_info['import_name']}")
+
+            # Optionally generate resources file
+            if context.path:
+                resources_file = context.path / "detected_resources.py"
+                try:
+                    ResourceDetector.generate_resources_file(
+                        list(detected_resources.values()),
+                        resources_file
+                    )
+                    logger.info(f"📝 Generated resource definitions: {resources_file}")
+                    logger.info(f"   Review and customize, then add to your Definitions!")
+                except Exception as e:
+                    logger.debug(f"Could not generate resources file: {e}")
 
         # Add no-op IO manager for Airflow assets that only yield metadata
         return Definitions(
