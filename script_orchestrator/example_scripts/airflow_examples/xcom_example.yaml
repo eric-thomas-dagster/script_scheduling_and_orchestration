@@ -1,0 +1,41 @@
+# XCom Data Passing Example
+# Demonstrates Airflow 3.x XCom syntax with + operator
+
+default:
+  start_date: 2025-09-01
+
+# Example: Extract data from two sources and process them together
+xcom_data_pipeline:
+  schedule: "@daily"
+  description: "Pipeline demonstrating XCom data passing between tasks"
+  tags: ["xcom", "data-passing", "example"]
+
+  tasks:
+    # Task 1: Extract data from source A
+    extract_data_a:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.xcom_tasks._extract_data_from_a
+      # No outlets - this is an intermediate step
+
+    # Task 2: Extract data from source B
+    extract_data_b:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.xcom_tasks._extract_data_from_b
+      # No outlets - this is an intermediate step
+
+    # Task 3: Process combined data
+    # Uses XCom syntax (+task_id) to get outputs from upstream tasks
+    process_data:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.xcom_tasks._process_combined_data
+      dependencies: [extract_data_a, extract_data_b]
+      # XCom syntax: + means "get output from this task"
+      data_a: +extract_data_a
+      data_b: +extract_data_b
+
+    # Task 4: Store results
+    store_results:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.xcom_tasks._store_results
+      dependencies: [process_data]
+      processed_data: +process_data

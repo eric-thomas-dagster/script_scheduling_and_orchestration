@@ -1834,6 +1834,8 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
         Pattern: Airflow DAG with asset_schedule but no outlets → Dagster op job + asset sensor
 
+        Now with XCom support: Ops can accept parameters from upstream ops!
+
         Returns:
             List containing [op_job, sensor]
         """
@@ -1850,88 +1852,180 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
         logger.info(f"Creating op job for DAG {dag_id} (triggered by asset: {trigger_asset_name})")
 
+        # Get XCom dependencies
+        xcom_deps = dag_info.get('xcom_dependencies', {})
+
         # Create ops for each task
         created_ops = []
 
         for task in dag_info['tasks']:
             task_id = task['task_id']
 
-            # Create the op function
-            def make_op_func(task_config, yaml_path_param, repo_path_param, dag_id_param, parser):
-                """Closure to capture task config and parser"""
-                def op_func(context: OpExecutionContext):
-                    """Execute the task."""
-                    task_id = task_config['task_id']
-                    context.log.info(f"Executing op from DAG {dag_id_param}, task {task_id}")
+            # Check if this task has XCom dependencies
+            task_xcom_deps = xcom_deps.get(task_id, {})
 
-                    operator_type = task_config.get('operator_type')
-                    parameters = task_config.get('parameters', {})
+            if task_xcom_deps:
+                logger.info(f"  Task {task_id} has XCom dependencies: {task_xcom_deps}")
 
-                    if operator_type == 'bash':
-                        bash_command = parameters.get('bash_command', 'echo "No command"')
-                        context.log.info(f"Executing bash: {bash_command}")
-                        result = subprocess.run(
-                            bash_command,
-                            shell=True,
-                            capture_output=True,
-                            text=True,
-                            cwd=repo_path_param,
-                        )
-                        return {"stdout": result.stdout, "returncode": result.returncode}
+            # Create the op function with XCom support
+            def make_op_func(task_config, yaml_path_param, repo_path_param, dag_id_param, parser, xcom_dependencies):
+                """Closure to capture task config, parser, and XCom deps"""
 
-                    elif operator_type == 'python':
-                        # Try to resolve python callable
-                        callable_func = parser.resolve_python_callable(
-                            task_config,
-                            yaml_path_param.parent
-                        )
-                        if callable_func:
-                            context.log.info(f"Executing Python callable: {callable_func.__name__}")
-                            result = callable_func()
-                            return result
+                # Build parameter signature based on XCom dependencies
+                if xcom_dependencies:
+                    # Op needs to accept parameters from upstream ops
+                    def op_func(context: OpExecutionContext, **xcom_inputs):
+                        """Execute the task with XCom inputs."""
+                        task_id = task_config['task_id']
+                        context.log.info(f"Executing op from DAG {dag_id_param}, task {task_id}")
+
+                        if xcom_inputs:
+                            context.log.info(f"XCom inputs: {list(xcom_inputs.keys())}")
+
+                        operator_type = task_config.get('operator_type')
+                        parameters = task_config.get('parameters', {})
+
+                        if operator_type == 'bash':
+                            bash_command = parameters.get('bash_command', 'echo "No command"')
+                            context.log.info(f"Executing bash: {bash_command}")
+                            result = subprocess.run(
+                                bash_command,
+                                shell=True,
+                                capture_output=True,
+                                text=True,
+                                cwd=repo_path_param,
+                            )
+                            return {"stdout": result.stdout, "returncode": result.returncode}
+
+                        elif operator_type == 'python':
+                            # Try to resolve python callable
+                            callable_func = parser.resolve_python_callable(
+                                task_config,
+                                yaml_path_param.parent
+                            )
+                            if callable_func:
+                                context.log.info(f"Executing Python callable: {callable_func.__name__}")
+
+                                # Try to call with XCom inputs if callable accepts them
+                                import inspect
+                                sig = inspect.signature(callable_func)
+
+                                if len(sig.parameters) > 0 and xcom_inputs:
+                                    # Callable accepts parameters - pass XCom inputs
+                                    context.log.info(f"Passing XCom inputs to callable: {list(xcom_inputs.keys())}")
+                                    result = callable_func(**xcom_inputs)
+                                else:
+                                    # Callable doesn't accept parameters or no XCom inputs
+                                    result = callable_func()
+
+                                return result
+                            else:
+                                context.log.warning(f"Could not resolve Python callable for task {task_id}")
+                                return None
+
+                        elif operator_type == 'dummy':
+                            context.log.info("Dummy task (no-op)")
+                            return "success"
+
                         else:
-                            context.log.warning(f"Could not resolve Python callable for task {task_id}")
+                            context.log.warning(f"Unsupported operator: {operator_type}")
                             return None
+                else:
+                    # No XCom dependencies - standard op
+                    def op_func(context: OpExecutionContext):
+                        """Execute the task."""
+                        task_id = task_config['task_id']
+                        context.log.info(f"Executing op from DAG {dag_id_param}, task {task_id}")
 
-                    elif operator_type == 'dummy':
-                        context.log.info("Dummy task (no-op)")
-                        return "success"
+                        operator_type = task_config.get('operator_type')
+                        parameters = task_config.get('parameters', {})
 
-                    else:
-                        context.log.warning(f"Unsupported operator: {operator_type}")
-                        return None
+                        if operator_type == 'bash':
+                            bash_command = parameters.get('bash_command', 'echo "No command"')
+                            context.log.info(f"Executing bash: {bash_command}")
+                            result = subprocess.run(
+                                bash_command,
+                                shell=True,
+                                capture_output=True,
+                                text=True,
+                                cwd=repo_path_param,
+                            )
+                            return {"stdout": result.stdout, "returncode": result.returncode}
+
+                        elif operator_type == 'python':
+                            # Try to resolve python callable
+                            callable_func = parser.resolve_python_callable(
+                                task_config,
+                                yaml_path_param.parent
+                            )
+                            if callable_func:
+                                context.log.info(f"Executing Python callable: {callable_func.__name__}")
+                                result = callable_func()
+                                return result
+                            else:
+                                context.log.warning(f"Could not resolve Python callable for task {task_id}")
+                                return None
+
+                        elif operator_type == 'dummy':
+                            context.log.info("Dummy task (no-op)")
+                            return "success"
+
+                        else:
+                            context.log.warning(f"Unsupported operator: {operator_type}")
+                            return None
 
                 return op_func
 
-            # Create the decorated op
-            op_func = make_op_func(task, yaml_path, repo_path, dag_id, self.dag_factory_parser)
+            # Create the decorated op with XCom dependencies
+            op_func = make_op_func(task, yaml_path, repo_path, dag_id, self.dag_factory_parser, task_xcom_deps)
             op_def = op(name=task_id)(op_func)
-            created_ops.append((task_id, op_def))
+            created_ops.append((task_id, op_def, task_xcom_deps))
 
             logger.info(f"  Created op: {task_id}")
 
-        # Create job that executes ops in order
+        # Create job that executes ops in order with XCom data passing
         job_name = dag_id
 
-        # Build job function that respects dependencies
+        # Build job function that respects dependencies and passes XCom data
         task_order = self.dag_factory_parser.get_task_execution_order(dag_info)
 
-        def make_job_func(ops_dict, task_order):
-            """Create job function with ops in execution order"""
+        def make_job_func(ops_list, task_order, xcom_deps_map):
+            """Create job function with ops in execution order and XCom data passing"""
             def job_func():
-                """Execute ops in dependency order."""
+                """Execute ops in dependency order, passing XCom data."""
                 results = {}
+                ops_dict = {task_id: op_def for task_id, op_def, _ in ops_list}
+                xcom_dict = {task_id: xcom_deps for task_id, _, xcom_deps in ops_list}
+
                 for task_id in task_order:
                     if task_id in ops_dict:
-                        results[task_id] = ops_dict[task_id]()
+                        op = ops_dict[task_id]
+                        task_xcom_deps = xcom_dict.get(task_id, {})
+
+                        if task_xcom_deps:
+                            # This op needs XCom inputs from upstream ops
+                            # Build kwargs with results from upstream tasks
+                            xcom_inputs = {}
+                            for param_name, upstream_task_id in task_xcom_deps.items():
+                                if upstream_task_id in results:
+                                    xcom_inputs[param_name] = results[upstream_task_id]
+                                else:
+                                    logger.warning(
+                                        f"XCom dependency not satisfied: {task_id} needs {param_name} "
+                                        f"from {upstream_task_id} but it hasn't run yet"
+                                    )
+
+                            # Call op with XCom inputs
+                            results[task_id] = op(**xcom_inputs)
+                        else:
+                            # No XCom dependencies - call normally
+                            results[task_id] = op()
+
                 return results
             return job_func
 
-        # Create dict for easier lookup
-        ops_dict = {task_id: op_def for task_id, op_def in created_ops}
-
-        # Create the job
-        job_func = make_job_func(ops_dict, task_order)
+        # Create the job with XCom-aware function
+        job_func = make_job_func(created_ops, task_order, xcom_deps)
         op_job = job(
             name=job_name,
             description=dag_info.get('description') or f"Op job from DAG {dag_id}",
@@ -1940,6 +2034,9 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 "dag_id": dag_id,
             }
         )(job_func)
+
+        if xcom_deps:
+            logger.info(f"  ✅ Op job supports XCom data passing for {len(xcom_deps)} task(s)")
 
         logger.info(f"  Created op job: {job_name}")
 
