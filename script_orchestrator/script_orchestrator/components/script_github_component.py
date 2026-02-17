@@ -466,7 +466,6 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         all_sensors = []
         all_schedules = []
         all_asset_checks = []
-        detected_resources = {}  # resource_name -> resource_info
 
         # Build script assets
         for script_info in state.scripts:
@@ -493,22 +492,8 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 # Single asset definition
                 all_assets.append(result)
 
-                # Detect resources and extract checks for Python scripts
+                # Extract checks for Python scripts
                 if script_info.script_path.suffix == '.py':
-                    # Resource detection
-                    try:
-                        resources = ResourceDetector.detect_resources_from_file(script_info.script_path)
-
-                        if resources:
-                            for resource in resources:
-                                resource_name = resource['resource_name']
-                                if resource_name not in detected_resources:
-                                    detected_resources[resource_name] = resource
-                                    logger.info(f"🔧 Detected {resource['resource_type']} resource: {resource_name}")
-
-                    except Exception as e:
-                        logger.debug(f"Could not detect resources from {script_info.name}: {e}")
-
                     # Asset checks
                     try:
                         checks = AssetCheckGenerator.extract_checks_from_file(
@@ -545,26 +530,6 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             f"{len(all_sensors)} sensors, {len(all_schedules)} schedules, "
             f"and {len(all_asset_checks)} asset checks"
         )
-
-        # Log detected resources
-        if detected_resources:
-            logger.info(f"🔧 Detected {len(detected_resources)} unique resources:")
-            for resource_name, resource_info in detected_resources.items():
-                logger.info(f"  - {resource_name} ({resource_info['resource_type']}): "
-                           f"from {resource_info['import_name']}")
-
-            # Optionally generate resources file
-            if context.path:
-                resources_file = context.path / "detected_resources.py"
-                try:
-                    ResourceDetector.generate_resources_file(
-                        list(detected_resources.values()),
-                        resources_file
-                    )
-                    logger.info(f"📝 Generated resource definitions: {resources_file}")
-                    logger.info(f"   Review and customize, then add to your Definitions!")
-                except Exception as e:
-                    logger.debug(f"Could not generate resources file: {e}")
 
         # Add no-op IO manager for Airflow assets that only yield metadata
         return Definitions(
@@ -2317,6 +2282,14 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         if doc_info['has_documentation']:
             logger.info(f"📚 Extracted documentation from {script_info.name}")
 
+        # Detect resources from script (for kinds and tags)
+        detected_resources = []
+        if script_info.script_path.suffix == '.py':
+            detected_resources = ResourceDetector.detect_resources_from_file(script_info.script_path)
+            if detected_resources:
+                resource_names = [r['resource_name'] for r in detected_resources]
+                logger.info(f"🔧 Detected resources: {', '.join(resource_names)}")
+
         # Build retry policy
         retry_policy = None
         if metadata.retry_policy:
@@ -2368,8 +2341,25 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             "script_type": script_type,
             "script_name": script_info.name
         }
+
+        # Add kinds from metadata
         for kind in metadata.kinds:
             asset_tags[f"dagster/kind/{kind}"] = ""
+
+        # Add detected resources as kinds and tags
+        resource_kinds = []
+        if detected_resources:
+            for resource in detected_resources:
+                resource_name = resource['resource_name']
+                resource_type = resource['resource_type']
+
+                # Add as kind (shows icon in UI)
+                asset_tags[f"dagster/kind/{resource_name}"] = ""
+                resource_kinds.append(resource_name)
+
+                # Add as regular tag for filtering
+                asset_tags[f"uses_{resource_name}"] = ""
+                asset_tags[f"resource_type_{resource_type}"] = ""
         
         # Build dependencies
         deps = {}
@@ -2607,6 +2597,20 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             "script_path": MetadataValue.path(str(script_info.script_path)),
             "script_type": MetadataValue.text(script_type),
         }
+
+        # Add detected resources to metadata
+        if detected_resources:
+            resource_info = {}
+            for resource in detected_resources:
+                resource_info[resource['resource_name']] = {
+                    'type': resource['resource_type'],
+                    'import': resource['import_name'],
+                }
+
+            base_metadata["detected_resources"] = MetadataValue.json({
+                "resources": [r['resource_name'] for r in detected_resources],
+                "details": resource_info,
+            })
 
         # Enrich with documentation metadata
         if doc_info['has_documentation']:

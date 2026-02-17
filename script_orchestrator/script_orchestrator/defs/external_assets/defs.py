@@ -14,6 +14,11 @@ order_book_stream = dg.AssetSpec(
                 "Dagster observes this stream but doesn't execute it. "
                 "Downstream batch jobs consume from this stream.",
     group_name="streaming_infrastructure",
+    tags={
+        "dagster/kind/kafka": "",
+        "dagster/kind/streaming": "",
+        "dagster/kind/data-ingestion": "",
+    },
     metadata={
         "system": "kafka",
         "frequency": "100ms",
@@ -32,6 +37,11 @@ order_book_clickhouse = dg.AssetSpec(
                 "Fed by streaming pipeline, consumed by batch aggregations.",
     deps=[order_book_stream],  # Downstream of stream
     group_name="data_warehouse",
+    tags={
+        "dagster/kind/clickhouse": "",
+        "dagster/kind/database": "",
+        "dagster/kind/data-warehouse": "",
+    },
     metadata={
         "system": "clickhouse",
         "table": "order_books",
@@ -48,6 +58,11 @@ spark_cluster = dg.AssetSpec(
     description="Spark cluster for distributed compute. "
                 "Dagster submits jobs to this cluster but doesn't manage the cluster itself.",
     group_name="compute_infrastructure",
+    tags={
+        "dagster/kind/spark": "",
+        "dagster/kind/compute": "",
+        "dagster/kind/infrastructure": "",
+    },
     metadata={
         "system": "spark",
         "type": "compute",

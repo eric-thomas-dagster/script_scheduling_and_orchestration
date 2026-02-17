@@ -21,7 +21,9 @@
         "schedule": null,
         "retry_policy": null,
         "prefect_mapping": null,
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -46,13 +48,15 @@
         "schedule": null,
         "retry_policy": null,
         "prefect_mapping": null,
+        "airflow_mapping": null,
         "partition": {
           "parameter": "date",
           "schedule": "daily",
           "start_date": "2024-01-01",
           "timezone": "America/New_York",
           "date_format": "%Y-%m-%d"
-        }
+        },
+        "dag_factory": null
       }
     },
     {
@@ -81,7 +85,9 @@
           "fallback_on_error": true,
           "mode": "graph_asset"
         },
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -105,7 +111,9 @@
         "schedule": null,
         "retry_policy": null,
         "prefect_mapping": null,
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -134,7 +142,9 @@
           "fallback_on_error": true,
           "mode": "graph_asset"
         },
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -163,7 +173,9 @@
           "fallback_on_error": true,
           "mode": "graph_asset"
         },
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -193,7 +205,9 @@
           "fallback_on_error": true,
           "mode": "graph_asset"
         },
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -222,7 +236,9 @@
           "fallback_on_error": true,
           "mode": "graph_asset"
         },
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -251,7 +267,9 @@
           "fallback_on_error": true,
           "mode": "graph_asset"
         },
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -281,7 +299,9 @@
           "fallback_on_error": true,
           "mode": "graph_asset"
         },
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -322,7 +342,9 @@
           "fallback_on_error": true,
           "mode": "graph_asset"
         },
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -352,7 +374,278 @@
           "fallback_on_error": true,
           "mode": "graph_asset"
         },
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "dag_with_xcom",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_xcom.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_xcom.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "Airflow ETL pipeline demonstrating XCom for inter-task communication",
+        "group_name": "airflow_examples",
+        "owners": [
+          "team:data_engineering"
+        ],
+        "tags": {
+          "category": "airflow",
+          "complexity": "intermediate",
+          "type": "xcom",
+          "feature": "inter-task-communication"
+        },
+        "kinds": [
+          "python",
+          "airflow",
+          "etl"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": {
+          "enabled": true,
+          "dag_id": "xcom_pipeline",
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "dag_with_params",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_params.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_params.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "Parameterized Airflow pipeline demonstrating config extraction and Launchpad support",
+        "group_name": "airflow_examples",
+        "owners": [
+          "team:data_engineering"
+        ],
+        "tags": {
+          "category": "airflow",
+          "complexity": "advanced",
+          "type": "parameterized"
+        },
+        "kinds": [
+          "python",
+          "airflow"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": {
+          "enabled": true,
+          "dag_id": "parameterized_pipeline",
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "dag_with_datasets_consumer",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_datasets_consumer.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_datasets_consumer.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "Airflow consumer pipeline demonstrating Dataset-driven scheduling (Airflow 2.4+)",
+        "group_name": "airflow_examples",
+        "owners": [
+          "team:data_engineering"
+        ],
+        "tags": {
+          "category": "airflow",
+          "complexity": "advanced",
+          "type": "datasets",
+          "feature": "data-aware-scheduling",
+          "airflow_version": "2.4_plus",
+          "role": "consumer"
+        },
+        "kinds": [
+          "python",
+          "airflow",
+          "datasets"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": {
+          "enabled": true,
+          "dag_id": "consumer_pipeline",
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "simple_sequential",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/simple_sequential.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/simple_sequential.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "Simple sequential Airflow pipeline with 3 tasks - fetch, process, save",
+        "group_name": "airflow_examples",
+        "owners": [
+          "team:data_engineering"
+        ],
+        "tags": {
+          "category": "airflow",
+          "complexity": "simple",
+          "type": "sequential"
+        },
+        "kinds": [
+          "python",
+          "airflow"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": {
+          "enabled": true,
+          "dag_id": "simple_sequential_pipeline",
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "dag_with_branching",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_branching.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_branching.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "Airflow pipeline with branching logic demonstrating non-linear task dependencies",
+        "group_name": "airflow_examples",
+        "owners": [
+          "team:data_engineering"
+        ],
+        "tags": {
+          "category": "airflow",
+          "complexity": "advanced",
+          "type": "branching"
+        },
+        "kinds": [
+          "python",
+          "airflow"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": {
+          "enabled": true,
+          "dag_id": "branching_pipeline",
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "dag_with_datasets_producer",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_datasets_producer.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/dag_with_datasets_producer.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "Airflow pipelines demonstrating Datasets for data-aware scheduling (Airflow 2.4+)",
+        "group_name": "airflow_examples",
+        "owners": [
+          "team:data_engineering"
+        ],
+        "tags": {
+          "category": "airflow",
+          "complexity": "advanced",
+          "type": "datasets",
+          "feature": "data-aware-scheduling",
+          "airflow_version": "2.4_plus"
+        },
+        "kinds": [
+          "python",
+          "airflow",
+          "datasets"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": {
+          "enabled": true,
+          "dag_id": "producer_pipeline",
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "customer_etl_factory",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/customer_etl_factory.py",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/customer_etl_factory.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "DAG Factory pattern - Multiple customer ETL DAGs as single partitioned asset",
+        "group_name": "dag_factory_examples",
+        "owners": [
+          "team:data_engineering"
+        ],
+        "tags": {
+          "pattern": "dag_factory",
+          "migration": "airflow_to_dagster"
+        },
+        "kinds": [
+          "airflow",
+          "etl",
+          "dag-factory"
+        ],
+        "depends_on": [],
+        "schedule": {
+          "cron_schedule": "0 3 * * *",
+          "timezone": "UTC",
+          "default_status": "RUNNING"
+        },
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": {
+          "enabled": true,
+          "dag_id": null,
+          "fallback_on_error": true,
+          "mode": "graph_asset"
+        },
+        "partition": null,
+        "dag_factory": {
+          "enabled": true,
+          "partition_key": "customer_id",
+          "partition_values": [
+            "customer_a",
+            "customer_b",
+            "customer_c"
+          ],
+          "dynamic": false,
+          "template_dag": null,
+          "auto_detect": true
+        }
       }
     },
     {
@@ -387,7 +680,9 @@
           "jitter": null
         },
         "prefect_mapping": null,
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -421,7 +716,9 @@
           "jitter": "FULL"
         },
         "prefect_mapping": null,
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -458,7 +755,9 @@
           "jitter": null
         },
         "prefect_mapping": null,
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -496,7 +795,9 @@
           "jitter": null
         },
         "prefect_mapping": null,
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     },
     {
@@ -531,7 +832,96 @@
           "jitter": null
         },
         "prefect_mapping": null,
-        "partition": null
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "dag_factory_customer_etl",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/example_dag_factory.yaml",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/example_dag_factory.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "Customer ETL pipeline from dag-factory YAML",
+        "group_name": "scripts",
+        "owners": [],
+        "tags": {
+          "source": "dag_factory_yaml",
+          "dag_id": "customer_etl",
+          "yaml_file": "example_dag_factory.yaml"
+        },
+        "kinds": [
+          "airflow",
+          "dag-factory",
+          "yaml"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "dag_factory_product_sync",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/example_dag_factory.yaml",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/example_dag_factory.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "Product catalog sync from dag-factory YAML",
+        "group_name": "scripts",
+        "owners": [],
+        "tags": {
+          "source": "dag_factory_yaml",
+          "dag_id": "product_sync",
+          "yaml_file": "example_dag_factory.yaml"
+        },
+        "kinds": [
+          "airflow",
+          "dag-factory",
+          "yaml"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
+      }
+    },
+    {
+      "name": "dag_factory_analytics_report",
+      "script_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/example_dag_factory.yaml",
+      "yaml_path": "/Users/ericthomas/Downloads/script_scheduling_and_orchestration/script_orchestrator/example_scripts/airflow_examples/example_dag_factory.yaml",
+      "metadata": {
+        "enabled": true,
+        "script_type": "airflow",
+        "description": "Weekly analytics report generation",
+        "group_name": "scripts",
+        "owners": [],
+        "tags": {
+          "source": "dag_factory_yaml",
+          "dag_id": "analytics_report",
+          "yaml_file": "example_dag_factory.yaml"
+        },
+        "kinds": [
+          "airflow",
+          "dag-factory",
+          "yaml"
+        ],
+        "depends_on": [],
+        "schedule": null,
+        "retry_policy": null,
+        "prefect_mapping": null,
+        "airflow_mapping": null,
+        "partition": null,
+        "dag_factory": null
       }
     }
   ],

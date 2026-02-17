@@ -35,6 +35,21 @@ class PrefectMappingConfig(BaseModel):
     mode: str = Field(default="graph_asset", description="Mapping mode (graph_asset is recommended)")
 
 
+class AirflowMappingConfig(BaseModel):
+    """Airflow → Dagster mapping configuration."""
+
+    enabled: bool = Field(default=False, description="Enable Airflow task mapping to Dagster ops")
+    dag_id: Optional[str] = Field(
+        default=None,
+        description="Specific DAG ID to map (if file contains multiple DAGs)"
+    )
+    fallback_on_error: bool = Field(
+        default=True,
+        description="If parsing fails, fall back to running as subprocess"
+    )
+    mode: str = Field(default="graph_asset", description="Mapping mode (graph_asset is recommended)")
+
+
 class PartitionConfig(BaseModel):
     """Partition configuration for time-based partitioning."""
 
@@ -54,13 +69,39 @@ class PartitionConfig(BaseModel):
     )
 
 
+class DagFactoryConfig(BaseModel):
+    """DAG Factory configuration for creating partitioned assets from multiple similar DAGs."""
+
+    enabled: bool = Field(default=False, description="Enable DAG Factory → Partitioned Asset conversion")
+    partition_key: str = Field(
+        ...,
+        description="The parameter that varies across DAGs (e.g., 'customer_id', 'region')"
+    )
+    partition_values: Optional[List[str]] = Field(
+        default=None,
+        description="Static list of partition values (e.g., ['customer_a', 'customer_b'])"
+    )
+    dynamic: bool = Field(
+        default=False,
+        description="Use dynamic partitions (values can be added/removed at runtime)"
+    )
+    template_dag: Optional[str] = Field(
+        default=None,
+        description="Path to template DAG file (if using template pattern)"
+    )
+    auto_detect: bool = Field(
+        default=True,
+        description="Auto-detect similar DAGs and suggest partitioning"
+    )
+
+
 class ScriptMetadata(BaseModel):
     """Complete script metadata configuration from script.yaml."""
 
     enabled: bool = Field(default=True, description="Whether this script is enabled")
     script_type: str = Field(
         default="python",
-        description="Type of script: python, prefect, spark, dask"
+        description="Type of script: python, prefect, airflow, spark, dask"
     )
     description: Optional[str] = Field(
         default=None,
@@ -99,10 +140,22 @@ class ScriptMetadata(BaseModel):
         description="Prefect → Dagster mapping configuration"
     )
 
+    # Airflow mapping configuration
+    airflow_mapping: Optional[AirflowMappingConfig] = Field(
+        default=None,
+        description="Airflow → Dagster mapping configuration"
+    )
+
     # Partition configuration
     partition: Optional[PartitionConfig] = Field(
         default=None,
         description="Partition configuration for time-based partitioning"
+    )
+
+    # DAG Factory configuration
+    dag_factory: Optional[DagFactoryConfig] = Field(
+        default=None,
+        description="DAG Factory configuration for converting multiple similar DAGs to partitioned assets"
     )
 
     class Config:
