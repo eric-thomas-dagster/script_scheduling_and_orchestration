@@ -1,0 +1,116 @@
+# Example DAG Factory YAML with Various Airflow Operators
+# Demonstrates support for S3, Snowflake, HTTP, and other operators
+
+data_pipeline_with_operators:
+  default_args:
+    owner: 'data_team'
+    retries: 2
+    retry_delay_sec: 300
+    start_date: 2024-01-01
+  schedule_interval: '0 4 * * *'
+  catchup: false
+  description: 'Data pipeline using various Airflow operators'
+  tags: ['production', 'operators', 'aws', 'snowflake']
+
+  tasks:
+    # S3 Operator - download file from S3
+    download_from_s3:
+      operator: airflow.providers.amazon.aws.operators.s3.S3DownloadOperator
+      bucket_name: 'my-data-bucket'
+      key: 'raw-data/customers.csv'
+      local_file: '/tmp/customers.csv'
+      aws_conn_id: 'aws_default'
+
+    # Bash Operator - process the file
+    process_data:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'python /opt/airflow/scripts/process_customers.py /tmp/customers.csv'
+      dependencies: [download_from_s3]
+
+    # Snowflake Operator - load to warehouse
+    load_to_snowflake:
+      operator: airflow.providers.snowflake.operators.snowflake.SnowflakeOperator
+      sql: |
+        COPY INTO customers
+        FROM @my_stage/customers.csv
+        FILE_FORMAT = (TYPE = CSV);
+      snowflake_conn_id: 'snowflake_default'
+      warehouse: 'COMPUTE_WH'
+      database: 'ANALYTICS'
+      schema: 'PUBLIC'
+      dependencies: [process_data]
+
+    # HTTP Operator - trigger downstream system
+    notify_completion:
+      operator: airflow.providers.http.operators.http.SimpleHttpOperator
+      http_conn_id: 'notification_api'
+      endpoint: '/api/notifications'
+      method: 'POST'
+      data: '{"message": "Customer data pipeline completed"}'
+      headers:
+        Content-Type: 'application/json'
+      dependencies: [load_to_snowflake]
+
+
+api_monitoring:
+  default_args:
+    owner: 'platform_team'
+    retries: 1
+    start_date: 2024-01-01
+  schedule_interval: '*/5 * * * *'  # Every 5 minutes
+  description: 'Monitor API endpoints'
+  tags: ['monitoring', 'http']
+
+  tasks:
+    # HTTP Sensor - wait for service to be healthy
+    check_api_health:
+      operator: airflow.providers.http.sensors.http.HttpSensor
+      http_conn_id: 'api_server'
+      endpoint: '/health'
+      method: 'GET'
+      response_check: 'lambda response: response.status_code == 200'
+
+    # HTTP Operator - fetch metrics
+    fetch_metrics:
+      operator: airflow.providers.http.operators.http.SimpleHttpOperator
+      http_conn_id: 'api_server'
+      endpoint: '/api/metrics'
+      method: 'GET'
+      dependencies: [check_api_health]
+
+    # Python Operator - process and alert
+    analyze_metrics:
+      operator: airflow.operators.python.PythonOperator
+      python_callable: 'monitoring.analyze_and_alert'
+      dependencies: [fetch_metrics]
+
+
+# Example with SQL operators
+database_maintenance:
+  default_args:
+    owner: 'dba_team'
+    retries: 0
+    start_date: 2024-01-01
+  schedule_interval: '0 2 * * 0'  # Sundays at 2am
+  description: 'Weekly database maintenance'
+  tags: ['maintenance', 'database']
+
+  tasks:
+    # Postgres Operator - vacuum tables
+    vacuum_postgres:
+      operator: airflow.providers.postgres.operators.postgres.PostgresOperator
+      postgres_conn_id: 'postgres_default'
+      sql: 'VACUUM ANALYZE customers, orders, products;'
+
+    # MySQL Operator - optimize tables
+    optimize_mysql:
+      operator: airflow.providers.mysql.operators.mysql.MySQLOperator
+      mysql_conn_id: 'mysql_default'
+      sql: 'OPTIMIZE TABLE customers, orders, products;'
+      dependencies: [vacuum_postgres]
+
+    # Bash Operator - backup database
+    backup_database:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'pg_dump -h localhost -U postgres mydb | gzip > /backups/mydb_$(date +%Y%m%d).sql.gz'
+      dependencies: [optimize_mysql]

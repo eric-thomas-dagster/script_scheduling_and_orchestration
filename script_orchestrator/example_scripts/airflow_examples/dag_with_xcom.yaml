@@ -1,0 +1,18 @@
+enabled: true
+description: "Airflow ETL pipeline demonstrating XCom for inter-task communication"
+group: "airflow_examples"
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  complexity: "intermediate"
+  type: "xcom"
+  feature: "inter-task-communication"
+kinds:
+  - python
+  - airflow
+  - etl
+script_type: airflow
+airflow_mapping:
+  enabled: true
+  dag_id: "xcom_pipeline"

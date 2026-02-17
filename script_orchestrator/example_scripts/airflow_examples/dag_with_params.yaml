@@ -1,0 +1,16 @@
+enabled: true
+description: "Parameterized Airflow pipeline demonstrating config extraction and Launchpad support"
+group: "airflow_examples"
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  complexity: "advanced"
+  type: "parameterized"
+kinds:
+  - python
+  - airflow
+script_type: airflow
+airflow_mapping:
+  enabled: true
+  dag_id: "parameterized_pipeline"

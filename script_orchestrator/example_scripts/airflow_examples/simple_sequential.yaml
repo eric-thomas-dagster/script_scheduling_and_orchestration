@@ -1,0 +1,16 @@
+enabled: true
+description: "Simple sequential Airflow pipeline with 3 tasks - fetch, process, save"
+group: "airflow_examples"
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  complexity: "simple"
+  type: "sequential"
+kinds:
+  - python
+  - airflow
+script_type: airflow
+airflow_mapping:
+  enabled: true
+  dag_id: "simple_sequential_pipeline"

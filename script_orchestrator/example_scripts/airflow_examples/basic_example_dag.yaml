@@ -1,0 +1,38 @@
+# Advanced DAG Factory Example with Task Groups, XCom, and Decorators
+# Based on Astronomer dag-factory advanced features
+
+basic_example_dag:
+  default_args:
+    owner: "astronomer"
+    start_date: 2025-09-01
+  description: "Basic example DAG with task groups and XCom"
+  tags: ["demo", "etl"]
+  schedule: "@hourly"
+
+  task_groups:
+    extract:
+      tooltip: "data extraction"
+
+  tasks:
+    extract_data_from_a:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.basic_example_tasks._extract_data
+      task_group_name: extract
+
+    extract_data_from_b:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.basic_example_tasks._extract_data
+      task_group_name: extract
+
+    store_data:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.basic_example_tasks._store_data
+      processed_at: "{{ logical_date }}"
+      data_a: +extract_data_from_a
+      data_b: +extract_data_from_b
+      dependencies: [extract]
+
+    validate_data:
+      operator: airflow.providers.standard.operators.bash.BashOperator
+      bash_command: "echo data is valid"
+      dependencies: [store_data]

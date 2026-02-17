@@ -1,0 +1,16 @@
+enabled: true
+description: "Airflow pipeline with branching logic demonstrating non-linear task dependencies"
+group: "airflow_examples"
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  complexity: "advanced"
+  type: "branching"
+kinds:
+  - python
+  - airflow
+script_type: airflow
+airflow_mapping:
+  enabled: true
+  dag_id: "branching_pipeline"

@@ -1,0 +1,20 @@
+enabled: true
+description: "Airflow consumer pipeline demonstrating Dataset-driven scheduling (Airflow 2.4+)"
+group: "airflow_examples"
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  complexity: "advanced"
+  type: "datasets"
+  feature: "data-aware-scheduling"
+  airflow_version: "2.4_plus"
+  role: "consumer"
+kinds:
+  - python
+  - airflow
+  - datasets
+script_type: airflow
+airflow_mapping:
+  enabled: true
+  dag_id: "consumer_pipeline"

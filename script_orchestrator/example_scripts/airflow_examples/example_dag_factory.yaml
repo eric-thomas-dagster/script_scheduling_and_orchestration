@@ -1,0 +1,92 @@
+# Example Astronomer DAG Factory YAML
+# This file defines multiple DAGs that will be converted to Dagster assets
+
+customer_etl:
+  default_args:
+    owner: 'data_team'
+    retries: 2
+    retry_delay_sec: 300
+    start_date: 2024-01-01
+  schedule_interval: '0 3 * * *'
+  catchup: false
+  description: 'Customer ETL pipeline from dag-factory YAML'
+  max_active_runs: 3
+  tags: ['production', 'etl', 'customers']
+
+  tasks:
+    extract_customers:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Extracting customer data from source systems"'
+
+    transform_customers:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Transforming customer data - applying business rules"'
+      dependencies: [extract_customers]
+
+    load_customers:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Loading customer data to warehouse"'
+      dependencies: [transform_customers]
+
+    send_notification:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Customer ETL completed successfully"'
+      dependencies: [load_customers]
+
+
+product_sync:
+  default_args:
+    owner: 'data_team'
+    retries: 1
+    retry_delay_sec: 60
+    start_date: 2024-01-01
+  schedule_interval: '@hourly'
+  catchup: false
+  description: 'Product catalog sync from dag-factory YAML'
+  tags: ['production', 'sync', 'products']
+
+  tasks:
+    fetch_products:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Fetching products from API"'
+
+    validate_products:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Validating product data"'
+      dependencies: [fetch_products]
+
+    update_catalog:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Updating product catalog"'
+      dependencies: [validate_products]
+
+
+analytics_report:
+  default_args:
+    owner: 'analytics_team'
+    retries: 3
+    start_date: 2024-01-01
+  schedule_interval: '0 9 * * 1'  # Monday at 9am
+  catchup: false
+  description: 'Weekly analytics report generation'
+  tags: ['analytics', 'reports']
+
+  tasks:
+    aggregate_data:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Aggregating weekly data"'
+
+    generate_charts:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Generating visualization charts"'
+      dependencies: [aggregate_data]
+
+    create_report:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Creating PDF report"'
+      dependencies: [aggregate_data]
+
+    email_report:
+      operator: airflow.operators.bash.BashOperator
+      bash_command: 'echo "Emailing report to stakeholders"'
+      dependencies: [generate_charts, create_report]

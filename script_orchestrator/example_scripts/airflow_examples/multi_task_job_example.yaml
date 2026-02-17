@@ -1,0 +1,81 @@
+# Example: Airflow DAG with Multiple Tasks → Dagster Job with Multiple Ops
+# Demonstrates that a DAG with NO outlets becomes a @job in Dagster
+
+default:
+  start_date: 2025-09-01
+
+# Producer: Has outlets → Asset
+produce_report:
+  schedule: "@daily"
+  description: "Generate daily report"
+  tasks:
+    generate_report:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.multi_task_example._generate_report
+      outlets:
+        - __type__: airflow.sdk.Asset
+          name: "daily_report"
+
+# Consumer: Multiple tasks, NO outlets → Job with multiple ops
+notify_stakeholders:
+  description: "Notify stakeholders about report (multiple steps)"
+  schedule:
+    - __type__: airflow.sdk.Asset
+      name: "daily_report"
+
+  tasks:
+    # Task 1: Format the email message
+    format_email:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.multi_task_example._format_email
+      # NO outlets - just prepares message
+
+    # Task 2: Send to management
+    send_to_management:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.multi_task_example._send_to_management
+      dependencies: [format_email]
+      # NO outlets - just sends email
+
+    # Task 3: Send to team
+    send_to_team:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.multi_task_example._send_to_team
+      dependencies: [format_email]
+      # NO outlets - just sends email
+
+    # Task 4: Log notification
+    log_notification:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.multi_task_example._log_notification
+      dependencies: [send_to_management, send_to_team]
+      # NO outlets - just logs
+
+# In Dagster, this becomes:
+#
+# @asset
+# def daily_report():
+#     _generate_report()
+#
+# @op
+# def format_email():
+#     return _format_email()
+#
+# @op
+# def send_to_management(message):
+#     _send_to_management(message)
+#
+# @op
+# def send_to_team(message):
+#     _send_to_team(message)
+#
+# @op
+# def log_notification():
+#     _log_notification()
+#
+# @job
+# def notify_stakeholders():  # The DAG becomes a job
+#     message = format_email()
+#     send_to_management(message)
+#     send_to_team(message)
+#     log_notification()

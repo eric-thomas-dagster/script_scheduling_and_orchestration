@@ -1,0 +1,36 @@
+# Asset-based Orchestration Example
+# Demonstrates Airflow 3.x asset scheduling (equivalent to Dagster's core model)
+#
+# In this example:
+# - update_iss_coordinates DAG produces the "iss_coordinates" asset
+# - process_iss_coordinates DAG is triggered when "iss_coordinates" updates
+#
+# This is Airflow's way of doing what Dagster does natively with @asset dependencies
+
+default:
+  start_date: 2025-09-01
+
+update_iss_coordinates:
+  schedule: "@daily"
+  description: "Fetch ISS coordinates and produce asset"
+  tags: ["assets", "api", "producer"]
+
+  tasks:
+    update_coordinates:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.asset_example_tasks._update_iss_coordinates
+      outlets:
+        - __type__: airflow.sdk.Asset
+          name: "iss_coordinates"
+
+process_iss_coordinates:
+  description: "Process ISS coordinates (triggered by asset update)"
+  tags: ["assets", "consumer"]
+  schedule:
+    - __type__: airflow.sdk.Asset
+      name: "iss_coordinates"
+
+  tasks:
+    read_coordinates:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.asset_example_tasks._read_iss_coordinates

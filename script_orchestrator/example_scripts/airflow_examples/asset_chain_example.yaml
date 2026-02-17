@@ -1,0 +1,72 @@
+# Example: Asset Chain (Multiple Assets) → Op Job (Terminal Operation)
+# Demonstrates that having an asset input doesn't make it an op job
+# It's about whether it has outlets (produces an asset)
+
+default:
+  start_date: 2025-09-01
+
+# Step 1: Fetch raw data (has outlets → Asset)
+fetch_raw_data:
+  schedule: "@hourly"
+  description: "Fetch raw data from API"
+  tags: ["etl", "extract"]
+  tasks:
+    fetch_api_data:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.chain_example._fetch_raw_data
+      outlets:
+        - __type__: airflow.sdk.Asset
+          name: "raw_data"
+
+# Step 2: Clean data (has outlets AND asset input → Still an Asset!)
+clean_data:
+  description: "Clean raw data"
+  tags: ["etl", "transform"]
+  schedule:
+    - __type__: airflow.sdk.Asset
+      name: "raw_data"
+  tasks:
+    clean_raw_data:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.chain_example._clean_data
+      outlets:
+        - __type__: airflow.sdk.Asset
+          name: "cleaned_data"
+
+# Step 3: Aggregate data (has outlets AND asset input → Still an Asset!)
+aggregate_data:
+  description: "Aggregate cleaned data"
+  tags: ["etl", "transform"]
+  schedule:
+    - __type__: airflow.sdk.Asset
+      name: "cleaned_data"
+  tasks:
+    aggregate_cleaned_data:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.chain_example._aggregate_data
+      outlets:
+        - __type__: airflow.sdk.Asset
+          name: "aggregated_data"
+
+# Step 4: Send alert (NO outlets, only asset input → Op Job!)
+send_completion_alert:
+  description: "Send alert when aggregation completes"
+  tags: ["notification"]
+  schedule:
+    - __type__: airflow.sdk.Asset
+      name: "aggregated_data"
+  tasks:
+    notify_team:
+      decorator: airflow.sdk.task
+      python_callable: include.tasks.chain_example._send_alert
+      # NO OUTLETS! This is the key difference - just sends an email
+
+
+# The chain:
+# raw_data (asset) → cleaned_data (asset) → aggregated_data (asset) → [alert job]
+#
+# In Dagster:
+# @asset raw_data
+# @asset(deps=[raw_data]) cleaned_data
+# @asset(deps=[cleaned_data]) aggregated_data
+# @job + @asset_sensor for alert (NOT an asset - no outlets)

@@ -1,0 +1,43 @@
+enabled: true
+description: "DAG Factory pattern - Multiple customer ETL DAGs as single partitioned asset"
+group: "dag_factory_examples"
+owners:
+  - "team:data_engineering"
+tags:
+  pattern: "dag_factory"
+  migration: "airflow_to_dagster"
+kinds:
+  - airflow
+  - etl
+  - dag-factory
+
+script_type: airflow
+
+# DAG Factory Configuration
+# This converts multiple similar Airflow DAGs into a single Dagster partitioned asset
+dag_factory:
+  enabled: true
+  partition_key: "customer_id"  # The parameter that varies between DAGs
+
+  # Static partitions (known set of values)
+  partition_values:
+    - "customer_a"
+    - "customer_b"
+    - "customer_c"
+
+  # Set to true for dynamic partitions (can add/remove customers at runtime)
+  dynamic: false
+
+  # Auto-detect similar DAGs and suggest partitioning
+  auto_detect: true
+
+# Airflow mapping - create graph asset from factory
+airflow_mapping:
+  enabled: true
+  fallback_on_error: true
+
+# Optional: Schedule for the partitioned asset
+schedule:
+  cron_schedule: "0 3 * * *"  # 3 AM daily
+  timezone: "UTC"
+  default_status: "RUNNING"
