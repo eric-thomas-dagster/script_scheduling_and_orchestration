@@ -1,0 +1,14 @@
+enabled: true
+script_type: prefect
+description: "Test Prefect flow in job mode"
+group: prefect_examples
+tags:
+  test: job_mode
+kinds:
+  - python
+  - prefect
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true
+  mode: job

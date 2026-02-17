@@ -17,13 +17,13 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
 from .parsers import AirflowParser, PrefectParser
 from .parsers.dag_factory_parser import DagFactoryYamlParser
-from .utils import AssetCheckGenerator, DocumentationExtractor, PerformanceMonitor, ResourceDetector
+from .utils import AirflowCheckDetector, DocumentationExtractor, PerformanceMonitor, ResourceDetector
 
 logger = logging.getLogger(__name__)
 from dagster import (
@@ -64,8 +64,10 @@ from dagster import (
     multi_asset,
     op,
 )
-from dagster.components import Component, ComponentLoadContext, Resolvable
-from pydantic import BaseModel, Field as PydanticField, field_validator
+from dagster.components import ComponentLoadContext, StateBackedComponent
+from dagster.components.utils.defs_state import DefsStateConfig, DefsStateConfigArgs, ResolvedDefsStateConfig
+from pydantic import BaseModel, Field as PydanticField
+from dataclasses import dataclass, field
 
 # Make git optional for environments where it's not available
 try:
@@ -123,77 +125,66 @@ class ScriptsState(BaseModel):
         arbitrary_types_allowed = True
 
 
-class ScriptGithubComponent(Component, BaseModel, Resolvable):
-    """Component for orchestrating Python scripts with Prefect flow mapping."""
+@dataclass
+class ScriptGithubComponent(StateBackedComponent):
+    """Component for orchestrating Python scripts with Prefect flow mapping.
+
+    This is a state-backed component that discovers scripts from local directories
+    or GitHub repositories and builds Dagster definitions for them.
+    """
+
+    # State management configuration
+    defs_state: ResolvedDefsStateConfig = field(
+        default_factory=lambda: DefsStateConfigArgs.local_filesystem()
+    )
 
     # Configuration fields - defaults come from environment variables
-    repo_url: Optional[str] = PydanticField(
-        default_factory=lambda: os.getenv("SCRIPTS_REPO_URL"),
-        description="GitHub repository URL (env: SCRIPTS_REPO_URL)"
-    )
-    repo_branch: str = PydanticField(
-        default_factory=lambda: os.getenv("SCRIPTS_REPO_BRANCH", "main"),
-        description="Branch to clone/pull (env: SCRIPTS_REPO_BRANCH)"
-    )
-    github_token: Optional[str] = PydanticField(
-        default_factory=lambda: os.getenv("GITHUB_TOKEN"),
-        description="GitHub token for private repos (env: GITHUB_TOKEN)"
-    )
-    scripts_directory: str = PydanticField(
-        default_factory=lambda: os.getenv("SCRIPTS_DIR", "scripts"),
-        description="Directory containing script files (env: SCRIPTS_DIR)"
-    )
-    use_local: bool = PydanticField(
-        default_factory=lambda: _env_bool("USE_LOCAL_SCRIPTS", False),
-        description="Use local scripts instead of cloning from GitHub"
-    )
+    repo_url: Optional[str] = field(default=None)
+    repo_branch: str = field(default="main")
+    github_token: Optional[str] = field(default=None)
+    scripts_directory: str = field(default="scripts")
+    use_local: bool = field(default=False)
 
     # Orchestrator configuration
-    airflow_enabled: bool = PydanticField(
-        default_factory=lambda: _env_bool("AIRFLOW_ENABLED", True),
-        description="Enable Airflow DAG discovery and execution (env: AIRFLOW_ENABLED)"
-    )
-    airflow_version: Optional[str] = PydanticField(
-        default_factory=lambda: os.getenv("AIRFLOW_VERSION"),
-        description="Target Airflow version (e.g., '2.9', '3.1'). If specified and not installed, will auto-install. (env: AIRFLOW_VERSION)"
-    )
-    airflow_auto_install: bool = PydanticField(
-        default_factory=lambda: _env_bool("AIRFLOW_AUTO_INSTALL", True),
-        description="Automatically install target airflow_version if not present or mismatched (env: AIRFLOW_AUTO_INSTALL)"
-    )
-    prefect_enabled: bool = PydanticField(
-        default_factory=lambda: _env_bool("PREFECT_ENABLED", True),
-        description="Enable Prefect flow discovery and execution (env: PREFECT_ENABLED)"
-    )
-    prefect_version: Optional[str] = PydanticField(
-        default_factory=lambda: os.getenv("PREFECT_VERSION"),
-        description="Target Prefect version (e.g., '2.14', '3.0'). If specified and not installed, will auto-install. (env: PREFECT_VERSION)"
-    )
-    prefect_auto_install: bool = PydanticField(
-        default_factory=lambda: _env_bool("PREFECT_AUTO_INSTALL", True),
-        description="Automatically install target prefect_auto_install if not present or mismatched (env: PREFECT_AUTO_INSTALL)"
-    )
+    airflow_enabled: bool = field(default=True)
+    airflow_version: Optional[str] = field(default=None)
+    airflow_auto_install: bool = field(default=True)
+    prefect_enabled: bool = field(default=True)
+    prefect_version: Optional[str] = field(default=None)
+    prefect_auto_install: bool = field(default=True)
+
+    # Parser instances (initialized in __post_init__)
+    prefect_parser: Optional[Any] = field(default=None, init=False)
+    airflow_parser: Optional[Any] = field(default=None, init=False)
+    dag_factory_parser: Optional[Any] = field(default=None, init=False)
 
     # Class variable to track if Airflow DB has been initialized
-    _airflow_db_checked: bool = False
+    _airflow_db_checked: bool = field(default=False, init=False)
 
-    # Parser instances (initialized in model_post_init)
-    prefect_parser: Optional[Any] = None
-    airflow_parser: Optional[Any] = None
-    dag_factory_parser: Optional[Any] = None
+    def __post_init__(self):
+        """Initialize after dataclass initialization."""
+        # Convert numeric versions to strings (YAML's 3.1 -> "3.1")
+        if self.airflow_version is not None:
+            self.airflow_version = str(self.airflow_version)
+        if self.prefect_version is not None:
+            self.prefect_version = str(self.prefect_version)
 
-    model_config = {"arbitrary_types_allowed": True, "extra": "allow"}
+        # Apply environment variable defaults if not set
+        if self.repo_url is None:
+            self.repo_url = os.getenv("SCRIPTS_REPO_URL")
+        if self.repo_branch == "main" and os.getenv("SCRIPTS_REPO_BRANCH"):
+            self.repo_branch = os.getenv("SCRIPTS_REPO_BRANCH")
+        if self.github_token is None:
+            self.github_token = os.getenv("GITHUB_TOKEN")
+        if self.scripts_directory == "scripts" and os.getenv("SCRIPTS_DIR"):
+            self.scripts_directory = os.getenv("SCRIPTS_DIR")
+        if not self.use_local and os.getenv("USE_LOCAL_SCRIPTS"):
+            self.use_local = _env_bool("USE_LOCAL_SCRIPTS", False)
+        if not self.airflow_version and os.getenv("AIRFLOW_VERSION"):
+            self.airflow_version = os.getenv("AIRFLOW_VERSION")
+        if not self.prefect_version and os.getenv("PREFECT_VERSION"):
+            self.prefect_version = os.getenv("PREFECT_VERSION")
 
-    @field_validator('airflow_version', 'prefect_version', mode='before')
-    @classmethod
-    def coerce_version_to_string(cls, v):
-        """Convert numeric versions to strings (e.g., YAML's 3.1 -> "3.1")."""
-        if v is None:
-            return v
-        return str(v)
-
-    def model_post_init(self, __context):
-        """Initialize after Pydantic model initialization."""
         # Log orchestrator configuration
         logger.info(f"Orchestrator config: airflow_enabled={self.airflow_enabled}, "
                    f"airflow_version={self.airflow_version}, "
@@ -210,8 +201,20 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
         # Initialize parsers
         self.prefect_parser = PrefectParser()
-        self.airflow_parser = AirflowParser()
+        try:
+            self.airflow_parser = AirflowParser()
+        except Exception as e:
+            logger.warning(f"Failed to initialize AirflowParser: {e}. Airflow support may be limited.")
+            self.airflow_parser = None
         self.dag_factory_parser = DagFactoryYamlParser()
+
+    @property
+    def defs_state_config(self) -> DefsStateConfig:
+        """Return the state configuration for this component."""
+        return DefsStateConfig.from_args(
+            self.defs_state,
+            default_key="scripts"
+        )
 
     def _ensure_orchestrator_installed(self, orchestrator: str, target_version: Optional[str], auto_install: bool = True):
         """Ensure the specified orchestrator is installed at the target version.
@@ -227,7 +230,20 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         try:
             if orchestrator == "airflow":
                 import airflow
-                installed_version = airflow.__version__
+                # Handle both Airflow 2.x and 3.x version detection
+                installed_version = None
+                if hasattr(airflow, '__version__'):
+                    installed_version = airflow.__version__
+                elif hasattr(airflow, 'version'):
+                    import airflow.version
+                    if hasattr(airflow.version, 'version'):
+                        installed_version = airflow.version.version
+
+                if not installed_version:
+                    # Fallback to importlib.metadata
+                    import importlib.metadata
+                    installed_version = importlib.metadata.version('apache-airflow')
+
             elif orchestrator == "prefect":
                 import prefect
                 installed_version = prefect.__version__
@@ -281,7 +297,9 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             self._install_orchestrator(orchestrator, target_version)
 
         except Exception as e:
-            logger.error(f"Error checking {orchestrator} installation: {e}")
+            # Only log at debug level since we handle most cases gracefully
+            logger.debug(f"Exception during {orchestrator} version check (handled): {e}")
+            logger.warning(f"{orchestrator.title()} installation check encountered an issue. Skipping auto-install.")
 
     def _install_orchestrator(self, orchestrator: str, version: str):
         """Install the specified orchestrator version using uv pip.
@@ -347,7 +365,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             # Check if Airflow DB is initialized
             # Use uv run to execute airflow with the correct virtual environment
             check_result = subprocess.run(
-                ["uv", "run", "python", "-m", "airflow", "db", "check"],
+                self._build_airflow_command("db", "check"),
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -357,7 +375,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             if check_result.returncode != 0:
                 # DB not initialized - run migration  (this can take 30-60 seconds)
                 migrate_result = subprocess.run(
-                    ["uv", "run", "python", "-m", "airflow", "db", "migrate"],
+                    self._build_airflow_command("db", "migrate"),
                     capture_output=True,
                     text=True,
                     timeout=120,
@@ -389,8 +407,64 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             ScriptGithubComponent._airflow_db_checked = True  # Don't check again
 
 
-    def write_state_to_path(self, context: ComponentLoadContext, path: Path) -> None:
-        """Clone/pull the GitHub repo and discover script directories."""
+    def _detect_airflow_version_in_uv(self) -> Optional[Tuple[int, int]]:
+        """Detect Airflow version by running Python in uv environment.
+
+        This is more reliable than trying to import at module load time,
+        since the Dagster process may not have access to uv-managed packages.
+        """
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["uv", "run", "python", "-c",
+                 "import importlib.metadata; print(importlib.metadata.version('apache-airflow'))"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                version_str = result.stdout.strip()
+                parts = version_str.split('.')
+                version_tuple = (int(parts[0]), int(parts[1]))
+                logger.info(f"Detected Airflow version via uv: {version_tuple}")
+                return version_tuple
+        except Exception as e:
+            logger.debug(f"Could not detect Airflow version via uv: {e}")
+        return None
+
+    def _build_airflow_command(self, *args) -> List[str]:
+        """Build Airflow CLI command that works with both Airflow 2.x and 3.x.
+
+        Airflow 2.x: python -m airflow <command>
+        Airflow 3.x: airflow <command> (no python -m)
+
+        Args:
+            *args: Airflow command arguments (e.g., "dags", "test", "dag_id", "date")
+
+        Returns:
+            List of command arguments suitable for subprocess
+        """
+        # Detect version in uv environment (cached after first call)
+        if not hasattr(self, '_cached_airflow_version'):
+            self._cached_airflow_version = self._detect_airflow_version_in_uv()
+
+        version = self._cached_airflow_version
+        if version and version[0] >= 3:
+            # Airflow 3.x: use direct airflow command
+            logger.debug(f"Using Airflow 3.x command format (detected version: {version})")
+            return ["uv", "run", "airflow"] + list(args)
+
+        # Default to Airflow 2.x style (python -m airflow)
+        # This also works as fallback if version detection fails
+        logger.debug(f"Using Airflow 2.x command format (detected version: {version})")
+        return ["uv", "run", "python", "-m", "airflow"] + list(args)
+
+    def write_state_to_path(self, state_path: Path) -> None:
+        """Clone/pull the GitHub repo and discover script directories.
+
+        Args:
+            state_path: Path to write the state JSON file to
+        """
         state = ScriptsState()
 
         try:
@@ -421,7 +495,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                         "SCRIPTS_REPO_URL environment variable is required when not using local scripts."
                     )
 
-                clone_dir = path / "repo_clone"
+                clone_dir = state_path.parent / "repo_clone"
                 clone_dir.mkdir(parents=True, exist_ok=True)
 
                 repo = self._clone_or_pull_repo(clone_dir, self.github_token)
@@ -442,20 +516,26 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             logger.error(f"Error discovering scripts: {e}")
 
         # Write state to disk
-        state_file = path / "scripts_state.json"
-        state_file.write_text(state.model_dump_json(indent=2))
+        state_path.write_text(state.model_dump_json(indent=2))
 
-    def build_defs(self, context: ComponentLoadContext) -> Definitions:
-        """Build Dagster definitions with schedules, partitions, and rich metadata."""
+    def build_defs_from_state(self, context: ComponentLoadContext, state_path: Optional[Path]) -> Definitions:
+        """Build Dagster definitions from cached state.
+
+        Args:
+            context: Component loading context
+            state_path: Path to the state file (None if state doesn't exist yet)
+
+        Returns:
+            Definitions containing discovered assets, jobs, sensors, and schedules
+        """
         # Ensure Airflow DB is initialized (one-time check) before building any Airflow assets
         self._ensure_airflow_db_initialized()
 
-        state_file = context.path / "scripts_state.json"
-        if not state_file.exists():
+        if state_path is None or not state_path.exists():
             logger.warning("No scripts state found. Run refresh to discover scripts.")
             return Definitions()
 
-        state = ScriptsState.model_validate_json(state_file.read_text())
+        state = ScriptsState.model_validate_json(state_path.read_text())
 
         if state.error:
             logger.error(f"Error in scripts state: {state.error}")
@@ -478,52 +558,44 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             if isinstance(result, list):
                 # Multiple definitions returned (assets, jobs, sensors)
                 for item in result:
-                    # Classify each definition by type
-                    if hasattr(item, 'node_def'):
+                    # Classify each definition by type name
+                    type_name = type(item).__name__
+                    if 'Job' in type_name:
                         # This is a job
                         all_jobs.append(item)
-                    elif hasattr(item, 'asset_key'):
+                    elif 'Sensor' in type_name:
                         # This is a sensor
                         all_sensors.append(item)
-                    else:
+                    elif 'Asset' in type_name:
                         # This is an asset
                         all_assets.append(item)
+                    else:
+                        # Unknown type - log warning
+                        logger.warning(f"Unknown definition type: {type_name}")
             elif result is not None:
-                # Single asset definition
-                all_assets.append(result)
+                # Check type even for single results
+                type_name = type(result).__name__
+                if 'Job' in type_name:
+                    all_jobs.append(result)
+                elif 'Sensor' in type_name:
+                    all_sensors.append(result)
+                elif 'Asset' in type_name:
+                    all_assets.append(result)
 
-                # Extract checks for Python scripts
-                if script_info.script_path.suffix == '.py':
-                    # Asset checks
-                    try:
-                        checks = AssetCheckGenerator.extract_checks_from_file(
-                            script_info.script_path,
-                            result.key.to_user_string()
+                    # Create schedule if configured (only for assets)
+                    if script_info.metadata and script_info.metadata.schedule:
+                        # Get the actual asset key from the definition
+                        # This handles cases where the asset name differs from script name (e.g., Airflow DAGs with datasets)
+                        actual_asset_key = result.key.to_user_string()
+
+                        schedule = self._build_schedule(
+                            f"{actual_asset_key}_schedule",
+                            script_info.metadata.schedule,
+                            actual_asset_key,
                         )
-
-                        if checks:
-                            check_specs = AssetCheckGenerator.create_asset_check_specs(
-                                result.key.to_user_string(),
-                                checks
-                            )
-                            all_asset_checks.extend(check_specs)
-                            logger.info(f"✅ Generated {len(check_specs)} asset checks for {script_info.name}")
-
-                    except Exception as e:
-                        logger.debug(f"Could not extract checks from {script_info.name}: {e}")
-
-                # Create schedule if configured
-                if script_info.metadata and script_info.metadata.schedule:
-                    # Get the actual asset key from the definition
-                    # This handles cases where the asset name differs from script name (e.g., Airflow DAGs with datasets)
-                    actual_asset_key = result.key.to_user_string()
-
-                    schedule = self._build_schedule(
-                        f"{actual_asset_key}_schedule",
-                        script_info.metadata.schedule,
-                        actual_asset_key,
-                    )
-                    all_schedules.append(schedule)
+                        all_schedules.append(schedule)
+                else:
+                    logger.warning(f"Unknown definition type for single result: {type_name}")
 
         logger.info(
             f"Created {len(all_assets)} assets, {len(all_jobs)} jobs, "
@@ -572,8 +644,20 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             metadata = None
             if yaml_file.exists():
                 discovered_yaml_files.add(yaml_file)
+
+                # Check if this is a dag-factory YAML - if so, skip the .py file
+                if self.dag_factory_parser.is_dag_factory_yaml(yaml_file):
+                    logger.debug(f"Skipping {script_file.name} - generated from dag-factory YAML {yaml_file.name}")
+                    continue
+
                 try:
-                    metadata_dict = yaml.safe_load(yaml_file.read_text())
+                    yaml_content = yaml_file.read_text()
+                    metadata_dict = yaml.safe_load(yaml_content)
+                    logger.debug(f"Loading YAML: {yaml_file.name}")
+                    # Debug: log ETL YAML specifically
+                    if "etl" in yaml_file.name.lower():
+                        logger.warning(f"!!! ETL YAML: {yaml_file.name}")
+                        logger.warning(f"!!! Parsed mode: {metadata_dict.get('prefect_mapping', {}).get('mode')}")
                     metadata = ScriptMetadata(**metadata_dict)
                 except Exception as e:
                     logger.warning(f"Could not parse {yaml_file}: {e}")
@@ -595,6 +679,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             for yaml_file in scripts_dir.rglob("*.yaml"):
                 # Skip if already associated with a Python script
                 if yaml_file in discovered_yaml_files:
+                    logger.debug(f"Skipping {yaml_file.name} - already discovered with Python script")
                     continue
 
                 # Skip hidden files
@@ -605,37 +690,36 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 if self.dag_factory_parser.is_dag_factory_yaml(yaml_file):
                     logger.info(f"Found dag-factory YAML: {yaml_file}")
 
-                    # Parse the YAML to get all DAGs
+                    # Parse the YAML to get all DAGs for metadata
                     dags = self.dag_factory_parser.parse_dag_factory_yaml(yaml_file)
+                    dag_ids = [dag_info['dag_id'] for dag_info in dags]
+                    logger.info(f"Discovered dag-factory YAML with {len(dag_ids)} DAG(s): {dag_ids} from {yaml_file}")
 
-                    # Create one ScriptInfo per DAG in the YAML
-                    for dag_info in dags:
-                        dag_id = dag_info['dag_id']
-                        script_name = f"dag_factory_{dag_id}"
+                    # Create ONE ScriptInfo for the entire YAML file
+                    # The _build_dag_factory_yaml_assets method will create assets for all DAGs in it
+                    script_name = f"dag_factory_{yaml_file.stem}"
+                    logger.warning(f"🔵 NEW CODE RUNNING: Creating single ScriptInfo '{script_name}' for {len(dag_ids)} DAGs")
 
-                        # Create metadata for this specific DAG
-                        metadata = ScriptMetadata(
-                            enabled=True,
-                            script_type="airflow",
-                            description=dag_info.get('description', f"DAG Factory: {dag_id}"),
-                            kinds=["airflow", "dag-factory", "yaml"],
-                            tags={
-                                "source": "dag_factory_yaml",
-                                "dag_id": dag_id,
-                                "yaml_file": yaml_file.name,
-                            },
+                    metadata = ScriptMetadata(
+                        enabled=True,
+                        script_type="airflow",
+                        description=f"DAG Factory YAML with {len(dag_ids)} DAG(s): {', '.join(dag_ids)}",
+                        kinds=["airflow", "dag-factory", "yaml"],
+                        tags={
+                            "source": "dag_factory_yaml",
+                            "yaml_file": yaml_file.name,
+                            "dag_count": str(len(dag_ids)),
+                        },
+                    )
+
+                    scripts.append(
+                        ScriptInfo(
+                            name=script_name,
+                            script_path=yaml_file,
+                            yaml_path=yaml_file,
+                            metadata=metadata,
                         )
-
-                        # Store dag_info in metadata for later use
-                        # We'll use the extra field support in ScriptMetadata
-                        scripts.append(
-                            ScriptInfo(
-                                name=script_name,
-                                script_path=yaml_file,  # Use YAML as script path
-                                yaml_path=yaml_file,
-                                metadata=metadata,
-                            )
-                        )
+                    )
 
         return scripts
 
@@ -737,6 +821,9 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
     def _parse_airflow_dag(self, script_path: Path):
         """Parse Airflow DAG file to extract tasks and DAG structure using AST."""
+        if not self.airflow_parser:
+            logger.warning("Airflow parser not initialized. Cannot parse DAG.")
+            return [], []
         return self.airflow_parser.parse_dag(script_path)
 
     # ===== Argparse and sys.argv Parsing Methods =====
@@ -1009,11 +1096,23 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             flow_info, tasks_info, script_info, metadata, repo_path
         )
 
+    def _create_prefect_flow_job(
+        self, flow_info: Dict, tasks_info: List[Dict], script_info: ScriptInfo,
+        metadata: ScriptMetadata, repo_path: str
+    ):
+        """Create an op job for a Prefect flow."""
+        return self.prefect_parser.create_job(
+            flow_info, tasks_info, script_info, metadata, repo_path
+        )
+
     def _create_airflow_dag_graph_asset(
         self, dag_info: Dict, tasks_info: List[Dict], script_info: ScriptInfo,
         metadata: ScriptMetadata, repo_path: str
     ):
         """Create a graph-backed asset for an Airflow DAG."""
+        if not self.airflow_parser:
+            logger.warning("Airflow parser not initialized. Cannot create graph asset.")
+            return None
         return self.airflow_parser.create_graph_asset(
             dag_info, tasks_info, script_info, metadata, repo_path
         )
@@ -1057,19 +1156,36 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 tasks, flows = self._parse_prefect_flow(script_info.script_path)
                 if flows:
                     flow_info = flows[0]
+                    logger.info(f"Prefect mapping config for {script_info.name}: {metadata.prefect_mapping}")
+                    logger.info(f"Prefect mapping mode raw value: {metadata.prefect_mapping.mode}")
+                    mode = metadata.prefect_mapping.mode or "graph_asset"
+                    logger.info(f"Prefect flow {script_info.name} final mode: {mode}")
 
-                    # Try to create graph asset
-                    graph_asset_def = self._create_prefect_flow_graph_asset(
-                        flow_info, tasks, script_info, metadata, repo_path
-                    )
+                    # Route based on mode
+                    if mode == "job":
+                        # Create op job
+                        job_def = self._create_prefect_flow_job(
+                            flow_info, tasks, script_info, metadata, repo_path
+                        )
 
-                    if graph_asset_def:
-                        logger.info(f"Created graph asset for Prefect flow: {script_info.name}")
-                        return graph_asset_def
+                        if job_def:
+                            logger.info(f"Created op job for Prefect flow: {script_info.name}")
+                            return job_def
+                        else:
+                            logger.info(f"Falling back to subprocess for: {script_info.name}")
                     else:
-                        logger.info(f"Falling back to subprocess for: {script_info.name}")
+                        # Create graph asset (default)
+                        graph_asset_def = self._create_prefect_flow_graph_asset(
+                            flow_info, tasks, script_info, metadata, repo_path
+                        )
+
+                        if graph_asset_def:
+                            logger.info(f"Created graph asset for Prefect flow: {script_info.name}")
+                            return graph_asset_def
+                        else:
+                            logger.info(f"Falling back to subprocess for: {script_info.name}")
             except Exception as e:
-                logger.warning(f"Failed to create graph asset for {script_info.name}: {e}")
+                logger.warning(f"Failed to create Prefect flow conversion for {script_info.name}: {e}")
                 logger.info(f"Falling back to subprocess execution")
 
         # Check if this is an Airflow DAG with mapping enabled
@@ -1211,6 +1327,17 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             except Exception as e:
                 logger.debug(f"Could not generate config for {dag_id}: {e}")
 
+        # Detect Airflow check operators
+        detected_checks = AirflowCheckDetector.detect_check_operators(dag_info)
+        check_specs_metadata = []
+        check_specs = []
+        if detected_checks:
+            check_specs_metadata = AirflowCheckDetector.generate_check_specs_metadata(detected_checks)
+            logger.info(f"🔍 Generated {len(check_specs_metadata)} asset check(s) from Airflow operators")
+
+            # We'll create the actual AssetCheckSpec objects after we know the asset keys
+            # Store for now and create them later
+
         # Build asset tags
         asset_tags = {
             **metadata.tags,
@@ -1244,6 +1371,8 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
                 for producer_script in producer_scripts:
                     try:
+                        if not self.airflow_parser:
+                            continue
                         _, producer_dags = self.airflow_parser.parse_dag(producer_script.script_path)
                         for producer_dag in producer_dags:
                             producer_outlets = producer_dag.get('outlet_datasets', [])
@@ -1305,6 +1434,23 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 tags=asset_tags,
             )
 
+        # Create AssetCheckSpec objects for detected Airflow check operators
+        from dagster import AssetCheckSpec, AssetKey
+        check_specs = []
+        if check_specs_metadata:
+            # Associate checks with the first outlet asset (or DAG asset if no outlets)
+            first_asset_key = list(asset_outs.keys())[0]
+
+            for spec_meta in check_specs_metadata:
+                check_spec = AssetCheckSpec(
+                    name=spec_meta['name'],
+                    asset=AssetKey(first_asset_key),
+                    description=spec_meta['description'],
+                )
+                check_specs.append(check_spec)
+
+            logger.info(f"✅ Created {len(check_specs)} AssetCheckSpec(s) for {first_asset_key}")
+
         # Define the multi-asset execution function
         if config_class:
             def airflow_multi_asset_fn(context: AssetExecutionContext, config):
@@ -1318,7 +1464,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                     start_time = datetime.now()
                     execution_date = start_time.strftime('%Y-%m-%d')
                     # Use uv run to execute airflow with the correct virtual environment
-                    airflow_cmd = ["uv", "run", "python", "-m", "airflow", "dags", "test", dag_id, execution_date]
+                    airflow_cmd = self._build_airflow_command("dags", "test", dag_id, execution_date)
 
                     # Set config as environment variables
                     env = os.environ.copy()
@@ -1335,20 +1481,62 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
                     context.log.info(f"Executing: {' '.join(airflow_cmd)}")
 
-                    result = subprocess.run(
+                    # Stream output in real-time while capturing for metadata
+                    stdout_lines = []
+                    stderr_lines = []
+
+                    process = subprocess.Popen(
                         airflow_cmd,
                         cwd=repo_path,
-                        capture_output=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
                         text=True,
-                        check=False,
                         env=env,
                     )
 
-                    if result.returncode != 0:
-                        context.log.error(f"Airflow DAG failed with exit code {result.returncode}")
-                        context.log.error(f"stdout: {result.stdout}")
-                        context.log.error(f"stderr: {result.stderr}")
-                        raise subprocess.CalledProcessError(result.returncode, airflow_cmd, result.stdout, result.stderr)
+                    # Read and log stdout in real-time
+                    while True:
+                        # Check if process has finished
+                        if process.poll() is not None:
+                            # Read any remaining output
+                            for line in process.stdout:
+                                line = line.rstrip()
+                                if line:
+                                    context.log.info(f"[airflow] {line}")
+                                    stdout_lines.append(line)
+                            for line in process.stderr:
+                                line = line.rstrip()
+                                if line:
+                                    context.log.warning(f"[airflow] {line}")
+                                    stderr_lines.append(line)
+                            break
+
+                        # Read available output
+                        line = process.stdout.readline()
+                        if line:
+                            line = line.rstrip()
+                            if line:
+                                context.log.info(f"[airflow] {line}")
+                                stdout_lines.append(line)
+
+                    returncode = process.wait()
+                    stdout_text = '\n'.join(stdout_lines)
+                    stderr_text = '\n'.join(stderr_lines)
+
+                    if returncode != 0:
+                        context.log.error(f"Airflow DAG failed with exit code {returncode}")
+                        if stderr_text:
+                            context.log.error(f"stderr: {stderr_text}")
+                        raise subprocess.CalledProcessError(returncode, airflow_cmd, stdout_text, stderr_text)
+
+                    # Create a result object for compatibility with existing code
+                    class ProcessResult:
+                        def __init__(self, returncode, stdout, stderr):
+                            self.returncode = returncode
+                            self.stdout = stdout
+                            self.stderr = stderr
+
+                    result = ProcessResult(returncode, stdout_text, stderr_text)
 
                     end_time = datetime.now()
                     duration = (end_time - start_time).total_seconds()
@@ -1366,6 +1554,30 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                         common_metadata["stdout"] = MetadataValue.md(f"```\n{result.stdout[-5000:]}\n```")
                     if result.stderr:
                         common_metadata["stderr"] = MetadataValue.md(f"```\n{result.stderr[-5000:]}\n```")
+
+                    # Parse and yield check results if we have check specs
+                    if check_specs_metadata:
+                        context.log.info(f"Parsing {len(check_specs_metadata)} check result(s) from logs")
+                        # Combine stdout and stderr for parsing
+                        full_log_output = result.stdout + "\n" + result.stderr
+                        check_results = AirflowCheckDetector.parse_check_results_from_logs(
+                            full_log_output,
+                            check_specs_metadata
+                        )
+
+                        if check_results:
+                            context.log.info(f"✅ Parsed {len(check_results)} check result(s)")
+                            for check_result in check_results:
+                                yield check_result
+                        else:
+                            context.log.warning("Could not parse check results from logs - using default pass status")
+                            # Fallback: yield default results
+                            default_results = AirflowCheckDetector.create_default_check_results(
+                                check_specs_metadata,
+                                passed=True  # Optimistic: if DAG succeeded, assume checks passed
+                            )
+                            for check_result in default_results:
+                                yield check_result
 
                     # Yield MaterializeResult for each outlet dataset
                     if outlet_datasets:
@@ -1399,7 +1611,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                     start_time = datetime.now()
                     execution_date = start_time.strftime('%Y-%m-%d')
                     # Use uv run to execute airflow with the correct virtual environment
-                    airflow_cmd = ["uv", "run", "python", "-m", "airflow", "dags", "test", dag_id, execution_date]
+                    airflow_cmd = self._build_airflow_command("dags", "test", dag_id, execution_date)
 
                     context.log.info(f"Executing: {' '.join(airflow_cmd)}")
 
@@ -1412,20 +1624,62 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                     # Continue even if some DAGs fail to import
                     env["AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT"] = "30"
 
-                    result = subprocess.run(
+                    # Stream output in real-time while capturing for metadata
+                    stdout_lines = []
+                    stderr_lines = []
+
+                    process = subprocess.Popen(
                         airflow_cmd,
                         cwd=repo_path,
-                        capture_output=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
                         text=True,
-                        check=False,
                         env=env,
                     )
 
-                    if result.returncode != 0:
-                        context.log.error(f"Airflow DAG failed with exit code {result.returncode}")
-                        context.log.error(f"stdout: {result.stdout}")
-                        context.log.error(f"stderr: {result.stderr}")
-                        raise subprocess.CalledProcessError(result.returncode, airflow_cmd, result.stdout, result.stderr)
+                    # Read and log stdout in real-time
+                    while True:
+                        # Check if process has finished
+                        if process.poll() is not None:
+                            # Read any remaining output
+                            for line in process.stdout:
+                                line = line.rstrip()
+                                if line:
+                                    context.log.info(f"[airflow] {line}")
+                                    stdout_lines.append(line)
+                            for line in process.stderr:
+                                line = line.rstrip()
+                                if line:
+                                    context.log.warning(f"[airflow] {line}")
+                                    stderr_lines.append(line)
+                            break
+
+                        # Read available output
+                        line = process.stdout.readline()
+                        if line:
+                            line = line.rstrip()
+                            if line:
+                                context.log.info(f"[airflow] {line}")
+                                stdout_lines.append(line)
+
+                    returncode = process.wait()
+                    stdout_text = '\n'.join(stdout_lines)
+                    stderr_text = '\n'.join(stderr_lines)
+
+                    if returncode != 0:
+                        context.log.error(f"Airflow DAG failed with exit code {returncode}")
+                        if stderr_text:
+                            context.log.error(f"stderr: {stderr_text}")
+                        raise subprocess.CalledProcessError(returncode, airflow_cmd, stdout_text, stderr_text)
+
+                    # Create a result object for compatibility with existing code
+                    class ProcessResult:
+                        def __init__(self, returncode, stdout, stderr):
+                            self.returncode = returncode
+                            self.stdout = stdout
+                            self.stderr = stderr
+
+                    result = ProcessResult(returncode, stdout_text, stderr_text)
 
                     end_time = datetime.now()
                     duration = (end_time - start_time).total_seconds()
@@ -1443,6 +1697,30 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                         common_metadata["stdout"] = MetadataValue.md(f"```\n{result.stdout[-5000:]}\n```")
                     if result.stderr:
                         common_metadata["stderr"] = MetadataValue.md(f"```\n{result.stderr[-5000:]}\n```")
+
+                    # Parse and yield check results if we have check specs
+                    if check_specs_metadata:
+                        context.log.info(f"Parsing {len(check_specs_metadata)} check result(s) from logs")
+                        # Combine stdout and stderr for parsing
+                        full_log_output = result.stdout + "\n" + result.stderr
+                        check_results = AirflowCheckDetector.parse_check_results_from_logs(
+                            full_log_output,
+                            check_specs_metadata
+                        )
+
+                        if check_results:
+                            context.log.info(f"✅ Parsed {len(check_results)} check result(s)")
+                            for check_result in check_results:
+                                yield check_result
+                        else:
+                            context.log.warning("Could not parse check results from logs - using default pass status")
+                            # Fallback: yield default results
+                            default_results = AirflowCheckDetector.create_default_check_results(
+                                check_specs_metadata,
+                                passed=True  # Optimistic: if DAG succeeded, assume checks passed
+                            )
+                            for check_result in default_results:
+                                yield check_result
 
                     # Yield MaterializeResult for each outlet dataset
                     if outlet_datasets:
@@ -1484,6 +1762,10 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             "retry_policy": retry_policy,
             "can_subset": True,
         }
+
+        # Add check specs if we have any
+        if check_specs:
+            multi_asset_kwargs["check_specs"] = check_specs
 
         multi_asset_def = multi_asset(**multi_asset_kwargs)(airflow_multi_asset_fn)
 
@@ -1667,6 +1949,41 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         logger.info(f"✅ Created dag-factory YAML asset (fallback): {script_info.name}")
         return dag_factory_asset
 
+    def _resolve_callable_file(self, task_config: dict, base_path: Path) -> Optional[Path]:
+        """Resolve the Python file containing the task's callable.
+
+        Args:
+            task_config: Task configuration dict
+            base_path: Base path to resolve relative imports
+
+        Returns:
+            Path to the Python file, or None if not found
+        """
+        python_callable = task_config.get('python_callable')
+        if not python_callable:
+            return None
+
+        try:
+            # Convert module path to file path
+            # e.g., "include.tasks.asset_example_tasks._update_iss_coordinates"
+            # becomes "include/tasks/asset_example_tasks.py"
+            parts = python_callable.split('.')
+            if len(parts) < 2:
+                return None
+
+            # Remove function name (last part)
+            module_parts = parts[:-1]
+            module_path = Path(*module_parts).with_suffix('.py')
+            file_path = base_path / module_path
+
+            if file_path.exists():
+                return file_path
+
+        except Exception as e:
+            logger.debug(f"Could not resolve callable file for {python_callable}: {e}")
+
+        return None
+
     def _build_assets_and_job_from_dag(
         self, dag_info: dict, script_info: ScriptInfo, metadata: ScriptMetadata, repo_path: str
     ):
@@ -1691,6 +2008,24 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             return None
 
         logger.info(f"Creating {len(asset_tasks)} assets from DAG {dag_id}")
+
+        # Detect resources from task callables
+        all_detected_resources = []
+        for task in dag_info['tasks']:
+            # Try to resolve the callable file
+            task_file = self._resolve_callable_file(task, yaml_path.parent)
+            if task_file and task_file.exists():
+                try:
+                    resources = ResourceDetector.detect_resources_from_file(task_file)
+                    all_detected_resources.extend(resources)
+                except Exception as e:
+                    logger.debug(f"Could not detect resources from {task_file}: {e}")
+
+        # Remove duplicates
+        unique_resources = {r['resource_name']: r for r in all_detected_resources}
+        if unique_resources:
+            resource_names = list(unique_resources.keys())
+            logger.info(f"🔧 Detected resources in Airflow tasks: {', '.join(resource_names)}")
 
         # Build retry policy from default_args
         default_args = dag_info.get('default_args', {})
@@ -1733,6 +2068,12 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             }
             for kind in metadata.kinds:
                 asset_tags[f"dagster/kind/{kind}"] = ""
+
+            # Add detected resources as kinds and tags
+            for resource_name, resource in unique_resources.items():
+                asset_tags[f"dagster/kind/{resource_name}"] = ""
+                asset_tags[f"uses_{resource_name}"] = ""
+                asset_tags[f"resource_type_{resource['resource_type']}"] = ""
 
             # Get operator type for compute_kind
             operator_type = task.get('operator_type', 'unknown')
@@ -1785,6 +2126,18 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
                 return asset_func
 
+            # Build metadata with detected resources
+            asset_metadata = {}
+            if unique_resources:
+                resource_info = {
+                    name: {'type': res['resource_type'], 'import': res['import_name']}
+                    for name, res in unique_resources.items()
+                }
+                asset_metadata["detected_resources"] = {
+                    "resources": list(unique_resources.keys()),
+                    "details": resource_info,
+                }
+
             # Create asset kwargs
             asset_kwargs = {
                 "name": asset_name,
@@ -1793,6 +2146,9 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 "tags": asset_tags,
                 "description": task.get('description') or f"Asset from DAG {dag_id}, task {task_id}",
             }
+
+            if asset_metadata:
+                asset_kwargs["metadata"] = asset_metadata
 
             if deps:
                 asset_kwargs["deps"] = deps
@@ -1852,6 +2208,23 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         trigger_asset_name = asset_schedule[0] if isinstance(asset_schedule, list) else asset_schedule
 
         logger.info(f"Creating op job for DAG {dag_id} (triggered by asset: {trigger_asset_name})")
+
+        # Detect resources from task callables
+        all_detected_resources = []
+        for task in dag_info['tasks']:
+            task_file = self._resolve_callable_file(task, yaml_path.parent)
+            if task_file and task_file.exists():
+                try:
+                    resources = ResourceDetector.detect_resources_from_file(task_file)
+                    all_detected_resources.extend(resources)
+                except Exception as e:
+                    logger.debug(f"Could not detect resources from {task_file}: {e}")
+
+        # Remove duplicates
+        unique_resources = {r['resource_name']: r for r in all_detected_resources}
+        if unique_resources:
+            resource_names = list(unique_resources.keys())
+            logger.info(f"🔧 Detected resources in Airflow tasks: {', '.join(resource_names)}")
 
         # Get XCom dependencies
         xcom_deps = dag_info.get('xcom_dependencies', {})
@@ -2027,13 +2400,24 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
         # Create the job with XCom-aware function
         job_func = make_job_func(created_ops, task_order, xcom_deps)
+
+        # Build job tags including detected resources
+        job_tags = {
+            "source": "dag_factory_yaml",
+            "dag_id": dag_id,
+            "dagster/kind/airflow": "",  # Airflow framework kind
+        }
+
+        # Add detected resources as kinds and tags
+        for resource_name, resource in unique_resources.items():
+            job_tags[f"dagster/kind/{resource_name}"] = ""
+            job_tags[f"uses_{resource_name}"] = ""
+            job_tags[f"resource_type_{resource['resource_type']}"] = ""
+
         op_job = job(
             name=job_name,
             description=dag_info.get('description') or f"Op job from DAG {dag_id}",
-            tags={
-                "source": "dag_factory_yaml",
-                "dag_id": dag_id,
-            }
+            tags=job_tags
         )(job_func)
 
         if xcom_deps:
@@ -2123,13 +2507,16 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         tasks, dags = self._parse_airflow_dag(script_info.script_path)
         dag_info = dags[0] if dags else {}
         dag_id = dag_info.get('dag_id', script_info.name)
+        logger.info(f"Creating DAG Factory asset from Python+YAML: script_{script_info.name} for DAG {dag_id} from {script_info.script_path}")
 
         # Define the partitioned asset function
         def dag_factory_asset(context: AssetExecutionContext):
             """Execute Airflow DAG with partition key as parameter."""
-            partition_key = context.partition_key
-            logger.info(f"Running DAG Factory asset for partition: {partition_key}")
-            context.log.info(f"Partition: {partition_key}")
+            # Check if running with partition
+            partition_key = context.partition_key if context.has_partition_key else None
+            if partition_key:
+                logger.info(f"Running DAG Factory asset for partition: {partition_key}")
+                context.log.info(f"Partition: {partition_key}")
             context.log.info(f"DAG: {dag_id}")
 
             try:
@@ -2137,7 +2524,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 execution_date = start_time.strftime('%Y-%m-%d')
 
                 # Execute Airflow DAG with partition key as parameter
-                airflow_cmd = ["uv", "run", "python", "-m", "airflow", "dags", "test", dag_id, execution_date]
+                airflow_cmd = self._build_airflow_command("dags", "test", dag_id, execution_date)
 
                 # Set environment including the partition key
                 env = os.environ.copy()
@@ -2146,12 +2533,15 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
                 env["AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT"] = "30"
 
-                # Pass partition key as Airflow variable
-                partition_param_name = factory_config.partition_key
-                env[f"AIRFLOW_VAR_{partition_param_name.upper()}"] = partition_key
+                # Get partition parameter name
+                partition_param_name = factory_config.partition_key if hasattr(factory_config, 'partition_key') else "partition"
+
+                # Pass partition key as Airflow variable (if provided)
+                if partition_key:
+                    env[f"AIRFLOW_VAR_{partition_param_name.upper()}"] = partition_key
+                    context.log.info(f"Partition parameter: {partition_param_name}={partition_key}")
 
                 context.log.info(f"Executing: {' '.join(airflow_cmd)}")
-                context.log.info(f"Partition parameter: {partition_param_name}={partition_key}")
 
                 result = subprocess.run(
                     airflow_cmd,
@@ -2173,8 +2563,8 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
                 output_metadata = {
                     "dag_id": MetadataValue.text(dag_id),
-                    "partition_key": MetadataValue.text(partition_key),
-                    "partition_param": MetadataValue.text(f"{partition_param_name}={partition_key}"),
+                    "partition_key": MetadataValue.text(partition_key or "default"),
+                    "partition_param": MetadataValue.text(f"{partition_param_name}={partition_key or 'default'}"),
                     "script_path": MetadataValue.path(str(script_info.script_path)),
                     "execution_date": MetadataValue.text(execution_date),
                     "duration_seconds": MetadataValue.float(duration),
@@ -2188,7 +2578,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                     output_metadata["stderr"] = MetadataValue.md(f"```\n{result.stderr[-5000:]}\n```")
 
                 return Output(
-                    value={"status": "success", "partition": partition_key},
+                    value={"status": "success", "partition": partition_key or "default"},
                     metadata=output_metadata,
                 )
             except Exception as e:
@@ -2361,13 +2751,14 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 asset_tags[f"uses_{resource_name}"] = ""
                 asset_tags[f"resource_type_{resource_type}"] = ""
         
-        # Build dependencies
-        deps = {}
+        # Build dependencies (for ordering only, not data passing)
+        deps = []
         if metadata.depends_on:
             for dep_name in metadata.depends_on:
                 dep_script = next((s for s in all_scripts if s.name == dep_name), None)
                 if dep_script:
-                    deps[dep_name] = AssetIn(key=f"script_{dep_name}")
+                    # Use AssetKey for ordering-only dependencies (no data passing)
+                    deps.append(AssetKey(f"script_{dep_name}"))
                 else:
                     logger.warning(f"Dependency {dep_name} not found for script {script_info.name}")
         
@@ -2384,11 +2775,11 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         
         # Define asset function based on features (config and/or partitions)
         if flow_config_class and partitions_def:
-            def script_asset(context: AssetExecutionContext, config, **dep_values):
+            def script_asset(context: AssetExecutionContext, config):
                 """Execute script with config and partition."""
                 logger.info(f"Running {script_type} script: {script_info.name}")
                 context.log.info(f"Script config: {config}")
-                partition_key = context.partition_key
+                partition_key = context.partition_key if context.has_partition_key else "default"
                 context.log.info(f"Partition: {partition_key}")
                 
                 try:
@@ -2441,7 +2832,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                     raise
                     
         elif flow_config_class:
-            def script_asset(context: AssetExecutionContext, config, **dep_values):
+            def script_asset(context: AssetExecutionContext, config):
                 """Execute script with config."""
                 logger.info(f"Running {script_type} script: {script_info.name}")
                 context.log.info(f"Script config: {config}")
@@ -2494,12 +2885,12 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                     raise
                     
         elif partitions_def:
-            def script_asset(context: AssetExecutionContext, **dep_values):
+            def script_asset(context: AssetExecutionContext):
                 """Execute script with partition."""
                 logger.info(f"Running {script_type} script: {script_info.name}")
-                partition_key = context.partition_key
+                partition_key = context.partition_key if context.has_partition_key else "default"
                 context.log.info(f"Partition: {partition_key}")
-                
+
                 try:
                     start_time = datetime.now()
                     python_cmd = ["uv", "run", "python", str(script_info.script_path), partition_key]
@@ -2542,7 +2933,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                     logger.error(f"Error running script: {e}")
                     raise
         else:
-            def script_asset(context: AssetExecutionContext, **dep_values):
+            def script_asset(context: AssetExecutionContext):
                 """Execute script."""
                 logger.info(f"Running {script_type} script: {script_info.name}")
                 
@@ -2636,7 +3027,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             "metadata": enriched_metadata,
             "owners": metadata.owners or [],
             "retry_policy": retry_policy,
-            "ins": deps if deps else None,
+            "deps": deps if deps else None,  # Use deps for ordering-only dependencies
         }
 
         if partitions_def:

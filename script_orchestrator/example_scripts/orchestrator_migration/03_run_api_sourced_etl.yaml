@@ -13,4 +13,4 @@ kinds:
 prefect_mapping:
   enabled: true
   fallback_on_error: true
-  mode: "graph_asset"
+  mode: job

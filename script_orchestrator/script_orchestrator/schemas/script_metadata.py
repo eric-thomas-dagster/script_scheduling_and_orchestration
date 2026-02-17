@@ -32,7 +32,10 @@ class PrefectMappingConfig(BaseModel):
         default=True,
         description="If parsing fails, fall back to running as subprocess"
     )
-    mode: str = Field(default="graph_asset", description="Mapping mode (graph_asset is recommended)")
+    mode: str = Field(
+        default="graph_asset",
+        description="Mapping mode: 'graph_asset' (default) or 'job' (for flows that are jobs, not assets)"
+    )
 
 
 class AirflowMappingConfig(BaseModel):
