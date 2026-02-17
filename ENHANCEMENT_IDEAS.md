@@ -20,28 +20,26 @@
 
 ## 🎯 Proposed Enhancements
 
-### 1. Airflow - Advanced Operator Support
+### 1. ~~Airflow - Advanced Operator Support~~ (NOT NEEDED)
 
-**Current:** Only bash, python, dummy operators
+**Status:** ❌ Not Relevant
 
-**Enhancement:**
-```python
-# Map specific operators to Dagster patterns
-OPERATOR_MAPPINGS = {
-    'EmailOperator': 'email_resource',
-    'SlackOperator': 'slack_resource',
-    'S3Operator': 's3_resource',
-    'PostgresOperator': 'postgres_resource',
-    'HttpOperator': 'http_resource',
-}
-```
+**Why Not Needed:**
+- We parse dag-factory YAML, not Python DAG files
+- YAML uses `python_callable` - we just call the function
+- Operator type is irrelevant - the callable does the work
+- Example:
+  ```yaml
+  send_email:
+    operator: EmailOperator
+    python_callable: tasks.send_email
+  ```
+  We call `tasks.send_email()` - don't need to know about EmailOperator!
 
-**Benefits:**
-- Richer operator support
-- Automatic resource generation
-- Better migration path from Airflow
-
-**Effort:** Medium (2-3 days)
+**What to Do Instead:**
+- Focus on Python script enhancements (resource detection)
+- Implement XCom data passing (#2 below)
+- No operator mapping needed!
 
 ---
 
@@ -429,58 +427,80 @@ def customer_data_asset(context):
 
 ## 📊 Priority Matrix
 
-| Enhancement | Value | Effort | Priority |
-|-------------|-------|--------|----------|
-| Enhanced XCom (Airflow) | High | Medium | **High** |
-| Advanced Operators (Airflow) | High | Medium | **High** |
-| Config Detection (Python) | High | Medium | **High** |
-| Resource Detection (Python) | Very High | High | **High** |
-| Performance Monitoring | Medium | Low | **Medium** |
-| Documentation Extraction | Medium | Low | **Medium** |
-| Asset Checks | High | Medium-High | **Medium** |
-| File Tracking (Python) | High | Medium-High | **Medium** |
-| Trigger Rules (Airflow) | Medium | Medium-High | **Low** |
-| Connections/Variables (Airflow) | Medium | Medium | **Low** |
-| Prefect Dependencies | Medium | Medium | **Low** |
-| Prefect Deployments | Medium | Medium | **Low** |
+| Enhancement | Value | Effort | Priority | Status |
+|-------------|-------|--------|----------|--------|
+| Performance Monitoring | High | Low | ~~High~~ | **✅ Done** |
+| Documentation Extraction | High | Low | ~~High~~ | **✅ Done** |
+| Asset Checks | High | Medium-High | ~~High~~ | **✅ Done** |
+| Enhanced XCom (Airflow) | High | Medium | **High** | 🔨 Ready |
+| Resource Detection (Python) | Very High | High | **High** | 🔨 Ready |
+| Config Detection (Python) | High | Medium | **High** | 🔨 Ready |
+| File Tracking (Python) | High | Medium-High | **Medium** | 🔨 Ready |
+| Trigger Rules (Airflow) | Medium | Medium-High | **Low** | 💤 Later |
+| Connections/Variables (Airflow) | Medium | Medium | **Low** | 💤 Later |
+| Prefect Dependencies | Medium | Medium | **Low** | 💤 Later |
+| Prefect Deployments | Medium | Medium | **Low** | 💤 Later |
+| ~~Advanced Operators (Airflow)~~ | ~~N/A~~ | ~~N/A~~ | **❌** | **Not Needed** |
 
 ---
 
 ## 🎯 Recommended Next Steps
 
-### Phase 1: Core Improvements (1-2 weeks)
-1. ✅ **Enhanced XCom Implementation** - Complete data flow between ops
-2. ✅ **Advanced Operator Support** - Common Airflow operators
-3. ✅ **Enhanced Config Detection** - Click, Typer, env vars
+### ✅ Phase 1: Quick Wins (DONE! 1 week)
+1. ✅ **Performance Monitoring** - Timing and memory tracking
+2. ✅ **Documentation Extraction** - Rich metadata from code
+3. ✅ **Asset Checks** - Validation and quality monitoring
 
-### Phase 2: Intelligence (2-3 weeks)
-4. ✅ **Resource Detection** - Auto-discover and generate resources
-5. ✅ **File Tracking** - Data lineage for file-based workflows
-6. ✅ **Asset Checks** - Validation and quality monitoring
+### Phase 2: Data Flow (1-2 weeks)
+4. 🔨 **Enhanced XCom Implementation** - Complete data flow between ops
+5. 🔨 **Enhanced Config Detection** - Click, Typer, env vars for Python scripts
 
-### Phase 3: Polish (1 week)
-7. ✅ **Performance Monitoring** - Timing and memory tracking
-8. ✅ **Documentation Extraction** - Rich metadata from code
+### Phase 3: Intelligence (2-3 weeks)
+6. 🔨 **Resource Detection** - Auto-discover and generate resources from imports
+7. 🔨 **File Tracking** - Data lineage for file-based workflows
 
-### Phase 4: Advanced Features (2-3 weeks)
-9. ✅ **Trigger Rules** - Complex workflow patterns
-10. ✅ **Connections/Variables** - Full Airflow compatibility
-11. ✅ **Prefect Enhancements** - Better dependency detection and deployments
+### Phase 4: Advanced Features (2-3 weeks) - Optional
+8. 💤 **Trigger Rules** - Complex workflow patterns
+9. 💤 **Connections/Variables** - Full Airflow compatibility
+10. 💤 **Prefect Enhancements** - Better dependency detection and deployments
+
+### ❌ Not Needed
+- ~~Advanced Operator Support~~ - YAML already abstracts operators via python_callable
 
 ---
 
-## 💡 Quick Wins (Can Do Now)
+## 💡 What We Just Built!
 
-1. **Performance Monitoring** (2-3 days)
-   - Low effort, immediate value
-   - Just wrap existing logic with timing/memory tracking
+1. ✅ **Performance Monitoring** (2-3 days) - DONE!
+   - Automatic execution time, memory, CPU tracking
+   - Zero configuration, works everywhere
 
-2. **Documentation Extraction** (1-2 days)
-   - Parse docstrings and comments
-   - Populate asset metadata
+2. ✅ **Documentation Extraction** (1-2 days) - DONE!
+   - Parse docstrings and extract structured metadata
+   - Populate asset descriptions and metadata automatically
 
-3. **Basic Operator Mapping** (2-3 days)
-   - Start with EmailOperator, SlackOperator
-   - Add resource definitions for common services
+3. ✅ **Asset Checks** (4-6 days) - DONE!
+   - Auto-generate checks from assert statements
+   - Data quality monitoring from existing code
 
-Would you like me to implement any of these? I'd recommend starting with **XCom Implementation** and **Advanced Operators** for Airflow, or **Resource Detection** for Python scripts!
+## 🚀 What to Build Next?
+
+Based on your insight about operators, here are the most valuable next enhancements:
+
+### Top Recommendations
+
+1. **Enhanced XCom Implementation** (2-3 days)
+   - Actually pass data between ops
+   - Create proper Dagster dependency graph
+   - High value for Airflow migrations
+
+2. **Resource Auto-Detection** (5-7 days)
+   - Analyze imports in Python scripts (psycopg2, boto3, requests)
+   - Auto-generate resource definitions
+   - HUGE value for plain Python scripts
+
+3. **Enhanced Config Detection** (3-4 days)
+   - Support Click, Typer, environment variables
+   - Unified config for all script types
+
+Would you like me to implement any of these?
