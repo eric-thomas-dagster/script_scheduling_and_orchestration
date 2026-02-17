@@ -23,9 +23,11 @@ import yaml
 
 from .parsers import AirflowParser, PrefectParser
 from .parsers.dag_factory_parser import DagFactoryYamlParser
+from .utils import AssetCheckGenerator, DocumentationExtractor, PerformanceMonitor
 
 logger = logging.getLogger(__name__)
 from dagster import (
+    AssetCheckSpec,
     AssetExecutionContext,
     AssetIn,
     AssetKey,
@@ -463,6 +465,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         all_jobs = []
         all_sensors = []
         all_schedules = []
+        all_asset_checks = []
 
         # Build script assets
         for script_info in state.scripts:
@@ -489,6 +492,25 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
                 # Single asset definition
                 all_assets.append(result)
 
+                # Extract and create asset checks for Python scripts
+                if script_info.script_path.suffix == '.py':
+                    try:
+                        checks = AssetCheckGenerator.extract_checks_from_file(
+                            script_info.script_path,
+                            result.key.to_user_string()
+                        )
+
+                        if checks:
+                            check_specs = AssetCheckGenerator.create_asset_check_specs(
+                                result.key.to_user_string(),
+                                checks
+                            )
+                            all_asset_checks.extend(check_specs)
+                            logger.info(f"✅ Generated {len(check_specs)} asset checks for {script_info.name}")
+
+                    except Exception as e:
+                        logger.debug(f"Could not extract checks from {script_info.name}: {e}")
+
                 # Create schedule if configured
                 if script_info.metadata and script_info.metadata.schedule:
                     # Get the actual asset key from the definition
@@ -504,7 +526,8 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
 
         logger.info(
             f"Created {len(all_assets)} assets, {len(all_jobs)} jobs, "
-            f"{len(all_sensors)} sensors, and {len(all_schedules)} schedules"
+            f"{len(all_sensors)} sensors, {len(all_schedules)} schedules, "
+            f"and {len(all_asset_checks)} asset checks"
         )
 
         # Add no-op IO manager for Airflow assets that only yield metadata
@@ -513,6 +536,7 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
             jobs=all_jobs,
             sensors=all_sensors,
             schedules=all_schedules,
+            asset_checks=all_asset_checks if all_asset_checks else None,
             resources={"airflow_io_manager": NoOpIOManager()}
         )
 
@@ -2089,11 +2113,77 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         logger.info(f"✅ Created DAG Factory partitioned asset: {script_info.name}")
         return partitioned_asset
 
+    def _execute_script_with_monitoring(
+        self,
+        context: AssetExecutionContext,
+        script_path: Path,
+        repo_path: str,
+        cli_args: Optional[List[str]] = None,
+        base_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Output:
+        """Execute a script with performance monitoring.
+
+        Args:
+            context: Dagster execution context
+            script_path: Path to the script
+            repo_path: Repository path
+            cli_args: Optional CLI arguments
+            base_metadata: Optional base metadata to include
+
+        Returns:
+            Output with result and performance metadata
+        """
+        python_cmd = ["uv", "run", "python", str(script_path)]
+        if cli_args:
+            python_cmd.extend(cli_args)
+
+        # Execute with performance monitoring
+        with PerformanceMonitor.track_performance(context.log) as perf:
+            result = subprocess.run(
+                python_cmd,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            if result.returncode != 0:
+                context.log.error(f"Script failed with exit code {result.returncode}")
+                context.log.error(f"stdout: {result.stdout}")
+                context.log.error(f"stderr: {result.stderr}")
+                raise subprocess.CalledProcessError(
+                    result.returncode, python_cmd, result.stdout, result.stderr
+                )
+
+        # Build output metadata
+        output_metadata = base_metadata.copy() if base_metadata else {}
+
+        # Add performance metrics
+        output_metadata.update(perf.get_metadata())
+
+        # Add script output
+        if result.stdout:
+            output_metadata["stdout"] = MetadataValue.md(f"```\n{result.stdout}\n```")
+        if result.stderr:
+            output_metadata["stderr"] = MetadataValue.md(f"```\n{result.stderr}\n```")
+
+        # Log performance summary
+        context.log.info(f"Performance: {perf.get_summary()}")
+
+        return Output(
+            value={"status": "success"},
+            metadata=output_metadata,
+        )
 
     def _build_script_asset(self, script_info: ScriptInfo, all_scripts: List[ScriptInfo], repo_path: str):
         """Build a Dagster asset for a Python script with config and partitions support."""
         metadata = script_info.metadata or ScriptMetadata()
-        
+
+        # Extract documentation from script
+        doc_info = DocumentationExtractor.extract_from_file(script_info.script_path)
+        if doc_info['has_documentation']:
+            logger.info(f"📚 Extracted documentation from {script_info.name}")
+
         # Build retry policy
         retry_policy = None
         if metadata.retry_policy:
@@ -2378,17 +2468,40 @@ class ScriptGithubComponent(Component, BaseModel, Resolvable):
         if flow_config_class:
             script_asset.__annotations__['config'] = flow_config_class
         
+        # Build base metadata for enrichment
+        base_metadata = {
+            "script_name": MetadataValue.text(script_info.name),
+            "script_path": MetadataValue.path(str(script_info.script_path)),
+            "script_type": MetadataValue.text(script_type),
+        }
+
+        # Enrich with documentation metadata
+        if doc_info['has_documentation']:
+            enriched_metadata = DocumentationExtractor.enrich_asset_metadata(
+                base_metadata, doc_info
+            )
+        else:
+            enriched_metadata = base_metadata
+
+        # Create rich description from documentation
+        description = DocumentationExtractor.create_rich_description(
+            script_info.name,
+            doc_info,
+            fallback_description=metadata.description
+        )
+
         # Apply asset decorator
         asset_kwargs = {
             "name": f"script_{script_info.name}",
             "group_name": metadata.group_name,
             "tags": asset_tags,
-            "description": metadata.description or f"Python script: {script_info.name}",
+            "description": description,
+            "metadata": enriched_metadata,
             "owners": metadata.owners or [],
             "retry_policy": retry_policy,
             "ins": deps if deps else None,
         }
-        
+
         if partitions_def:
             asset_kwargs["partitions_def"] = partitions_def
         
