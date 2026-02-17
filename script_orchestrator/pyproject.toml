@@ -42,6 +42,10 @@ directory_type = "project"
 [tool.dg.project]
 root_module = "script_orchestrator"
 
+[tool.dagster]
+module_name = "script_orchestrator"
+registry_modules = ["script_orchestrator.components"]
+
 [tool.setuptools.packages.find]
 exclude=["script_orchestrator_tests"]
 
