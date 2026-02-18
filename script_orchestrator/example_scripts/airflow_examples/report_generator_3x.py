@@ -1,10 +1,14 @@
 """
 Report generator using Airflow 3.x syntax with task dependencies.
-Demonstrates parallel task execution and downstream aggregation.
+Demonstrates parallel task execution, downstream aggregation, and asset production.
 """
 from datetime import datetime
 
-from airflow.sdk import dag, task
+from airflow.sdk import Asset, dag, task
+
+
+# Define the output asset
+daily_report_asset = Asset("daily_report")
 
 
 @dag(
@@ -47,9 +51,9 @@ def daily_report_pipeline():
             "total_items": 320,
         }
 
-    @task
+    @task(outlets=[daily_report_asset])
     def generate_report(sales: dict, customers: dict, inventory: dict) -> str:
-        """Generate the final report from all data sources."""
+        """Generate the final report from all data sources and produce asset."""
         print("Generating daily report...")
 
         report = f"""
@@ -72,6 +76,7 @@ def daily_report_pipeline():
 
         print(report)
         print("✅ Report generated successfully")
+        print("📦 Produced asset: daily_report")
         return report
 
     @task

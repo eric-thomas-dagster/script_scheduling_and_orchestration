@@ -1,10 +1,14 @@
 """
 Simple ETL pipeline using Airflow 3.x syntax.
-Demonstrates airflow.sdk imports and basic task flow.
+Demonstrates airflow.sdk imports, basic task flow, and asset production.
 """
 from datetime import datetime
 
-from airflow.sdk import dag, task
+from airflow.sdk import Asset, dag, task
+
+
+# Define the output asset
+clean_data_asset = Asset("clean_etl_data")
 
 
 @task
@@ -35,9 +39,9 @@ def transform(data: dict) -> dict:
     return {"records": transformed}
 
 
-@task
+@task(outlets=[clean_data_asset])
 def load(data: dict) -> None:
-    """Load transformed data to destination."""
+    """Load transformed data to destination and produce asset."""
     print("Loading data to destination...")
     records = data["records"]
 
@@ -45,6 +49,7 @@ def load(data: dict) -> None:
         print(f"  Loaded: {record}")
 
     print(f"✅ Successfully loaded {len(records)} records")
+    print(f"📦 Produced asset: clean_etl_data")
 
 
 @dag(
