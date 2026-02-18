@@ -2,9 +2,39 @@
 
 A Dagster component that orchestrates existing Python scripts, Airflow DAGs, and Prefect flows - **no code changes required**.
 
-## Perfect for Airflow & Prefect Users
+## Why Use This?
 
-This project demonstrates a practical approach to running existing orchestration code in Dagster:
+**Already doing data engineering in Python, Airflow, or Prefect? Migrate to Dagster without the rewrite.**
+
+### Key Benefits
+
+🎯 **No Infrastructure Overhead**
+- ❌ No Prefect Server/Cloud required
+- ❌ No Airflow webserver, scheduler, or Astronomer needed
+- ✅ Just Dagster - one platform for all orchestration
+
+🚀 **Elevate Your Existing Code**
+- **Rich metadata** - Automatic capture of logs, timing, and execution details
+- **Dependencies & lineage** - Visual asset graphs across Python/Airflow/Prefect
+- **Unified observability** - One UI for all your workflows
+- **Better scheduling** - Dagster's asset-based scheduling and partitioning
+- **Data quality** - Asset checks and validation built-in
+
+💰 **Cost & Complexity Reduction**
+- No separate Airflow/Prefect infrastructure to maintain
+- Eliminate Astronomer/Prefect Cloud costs
+- Single deployment, monitoring, and alerting system
+- Reduced operational overhead
+
+🛤️ **Practical Migration Path**
+- **Start immediately** - Run existing code as-is in Dagster
+- **Gradual adoption** - Migrate piece-by-piece to native Dagster patterns
+- **No rewrite required** - Keep working code working while you modernize
+- **Proven patterns** - See exactly how Airflow/Prefect maps to Dagster
+
+### How It Works
+
+This component takes a practical approach:
 
 - 🔍 **Parse & Extract** - Automatically reads schedules, parameters, and configuration from Airflow/Prefect
 - 📊 **Capture Metadata** - Logs, execution time, and metadata automatically captured
@@ -12,7 +42,7 @@ This project demonstrates a practical approach to running existing orchestration
 - 🔄 **Intelligent Fallback** - When gaps exist, falls back to in-process execution (subprocess)
 - ⚠️ **Known Limitations** - Some features unsupported (e.g., Airflow HITL, interactive features)
 
-This approach supports most Airflow and Prefect workflows while providing a migration path to native Dagster patterns.
+This approach supports most Airflow and Prefect workflows while providing a clear migration path to native Dagster patterns.
 
 ## Quick Start
 
