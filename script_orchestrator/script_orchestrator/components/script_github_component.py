@@ -65,9 +65,9 @@ from dagster import (
     op,
 )
 from dagster.components import ComponentLoadContext, StateBackedComponent
+from dagster.components.resolved.base import Resolvable
 from dagster.components.utils.defs_state import DefsStateConfig, DefsStateConfigArgs, ResolvedDefsStateConfig
-from pydantic import BaseModel, Field as PydanticField
-from dataclasses import dataclass, field
+from pydantic import BaseModel, Field as PydanticField, field_validator
 
 # Make git optional for environments where it's not available
 try:
@@ -125,51 +125,91 @@ class ScriptsState(BaseModel):
         arbitrary_types_allowed = True
 
 
-@dataclass
-class ScriptGithubComponent(StateBackedComponent):
+class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
     """Component for orchestrating Python scripts with Prefect flow mapping.
 
     This is a state-backed component that discovers scripts from local directories
     or GitHub repositories and builds Dagster definitions for them.
+
+    Inherits from StateBackedComponent (for state management), BaseModel (for Pydantic),
+    and Resolvable (for YAML configuration support).
     """
 
     # State management configuration
-    defs_state: ResolvedDefsStateConfig = field(
-        default_factory=lambda: DefsStateConfigArgs.local_filesystem()
+    defs_state: ResolvedDefsStateConfig = PydanticField(
+        default_factory=lambda: DefsStateConfigArgs.local_filesystem(),
+        description="Configuration for where to store component state"
     )
 
     # Configuration fields - defaults come from environment variables
-    repo_url: Optional[str] = field(default=None)
-    repo_branch: str = field(default="main")
-    github_token: Optional[str] = field(default=None)
-    scripts_directory: str = field(default="scripts")
-    use_local: bool = field(default=False)
+    repo_url: Optional[str] = PydanticField(
+        default=None,
+        description="GitHub repository URL (env: SCRIPTS_REPO_URL)"
+    )
+    repo_branch: str = PydanticField(
+        default="main",
+        description="Branch to clone/pull (env: SCRIPTS_REPO_BRANCH)"
+    )
+    github_token: Optional[str] = PydanticField(
+        default=None,
+        description="GitHub token for private repos (env: GITHUB_TOKEN)"
+    )
+    scripts_directory: str = PydanticField(
+        default="scripts",
+        description="Directory containing script files (env: SCRIPTS_DIR)"
+    )
+    use_local: bool = PydanticField(
+        default=False,
+        description="Use local scripts instead of cloning from GitHub"
+    )
 
     # Orchestrator configuration
-    airflow_enabled: bool = field(default=True)
-    airflow_version: Optional[str] = field(default=None)
-    airflow_auto_install: bool = field(default=True)
-    prefect_enabled: bool = field(default=True)
-    prefect_version: Optional[str] = field(default=None)
-    prefect_auto_install: bool = field(default=True)
+    airflow_enabled: bool = PydanticField(
+        default=True,
+        description="Enable Airflow DAG discovery and execution (env: AIRFLOW_ENABLED)"
+    )
+    airflow_version: Optional[str] = PydanticField(
+        default=None,
+        description="Target Airflow version (e.g., '2.9', '3.1'). If specified and not installed, will auto-install. (env: AIRFLOW_VERSION)"
+    )
+    airflow_auto_install: bool = PydanticField(
+        default=True,
+        description="Automatically install target airflow_version if not present or mismatched (env: AIRFLOW_AUTO_INSTALL)"
+    )
+    prefect_enabled: bool = PydanticField(
+        default=True,
+        description="Enable Prefect flow discovery and execution (env: PREFECT_ENABLED)"
+    )
+    prefect_version: Optional[str] = PydanticField(
+        default=None,
+        description="Target Prefect version (e.g., '2.14', '3.0'). If specified and not installed, will auto-install. (env: PREFECT_VERSION)"
+    )
+    prefect_auto_install: bool = PydanticField(
+        default=True,
+        description="Automatically install target prefect_auto_install if not present or mismatched (env: PREFECT_AUTO_INSTALL)"
+    )
 
-    # Parser instances (initialized in __post_init__)
-    prefect_parser: Optional[Any] = field(default=None, init=False)
-    airflow_parser: Optional[Any] = field(default=None, init=False)
-    dag_factory_parser: Optional[Any] = field(default=None, init=False)
+    # Parser instances (initialized in model_post_init)
+    prefect_parser: Optional[Any] = None
+    airflow_parser: Optional[Any] = None
+    dag_factory_parser: Optional[Any] = None
 
     # Class variable to track if Airflow DB has been initialized
-    _airflow_db_checked: bool = field(default=False, init=False)
+    _airflow_db_checked: bool = False
 
-    def __post_init__(self):
-        """Initialize after dataclass initialization."""
-        # Convert numeric versions to strings (YAML's 3.1 -> "3.1")
-        if self.airflow_version is not None:
-            self.airflow_version = str(self.airflow_version)
-        if self.prefect_version is not None:
-            self.prefect_version = str(self.prefect_version)
+    model_config = {"arbitrary_types_allowed": True, "extra": "allow"}
 
-        # Apply environment variable defaults if not set
+    @field_validator('airflow_version', 'prefect_version', mode='before')
+    @classmethod
+    def coerce_version_to_string(cls, v):
+        """Convert numeric versions to strings (e.g., YAML's 3.1 -> "3.1")."""
+        if v is None:
+            return v
+        return str(v)
+
+    def model_post_init(self, __context):
+        """Initialize after Pydantic model initialization."""
+        # Apply environment variable defaults if not explicitly set in YAML
         if self.repo_url is None:
             self.repo_url = os.getenv("SCRIPTS_REPO_URL")
         if self.repo_branch == "main" and os.getenv("SCRIPTS_REPO_BRANCH"):
@@ -180,9 +220,9 @@ class ScriptGithubComponent(StateBackedComponent):
             self.scripts_directory = os.getenv("SCRIPTS_DIR")
         if not self.use_local and os.getenv("USE_LOCAL_SCRIPTS"):
             self.use_local = _env_bool("USE_LOCAL_SCRIPTS", False)
-        if not self.airflow_version and os.getenv("AIRFLOW_VERSION"):
+        if self.airflow_version is None and os.getenv("AIRFLOW_VERSION"):
             self.airflow_version = os.getenv("AIRFLOW_VERSION")
-        if not self.prefect_version and os.getenv("PREFECT_VERSION"):
+        if self.prefect_version is None and os.getenv("PREFECT_VERSION"):
             self.prefect_version = os.getenv("PREFECT_VERSION")
 
         # Log orchestrator configuration
