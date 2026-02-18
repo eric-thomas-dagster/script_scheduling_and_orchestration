@@ -322,7 +322,7 @@ timeout: 3600                 # Timeout in seconds
 
 #### Airflow DAGs
 
-For standard Airflow DAGs (Python files):
+For standard Airflow DAGs (Python files with `.py` extension):
 
 ```yaml
 # dag_example.yaml (for dag_example.py)
@@ -344,35 +344,7 @@ airflow_mapping:
   dag_id: "my_dag_id"         # Optional: override DAG ID
 ```
 
-For dag-factory YAML files:
-
-```yaml
-# dag_factory_example.yaml
-default:
-  start_date: 2025-09-01      # Global default for all DAGs
-
-my_dag:
-  schedule: "@daily"
-  description: "My DAG description"
-  tags: ["production", "etl"]
-
-  tasks:
-    task_name:
-      decorator: airflow.sdk.task
-      python_callable: module.function_name
-      outlets:                # Produces an asset
-        - __type__: airflow.sdk.Asset
-          name: "asset_name"
-      dependencies: [other_task]  # Task dependencies
-
-    # XCom example
-    process_task:
-      decorator: airflow.sdk.task
-      python_callable: module.process
-      data: +extract_task     # Get output from extract_task via XCom
-```
-
-**Airflow YAML Parameters (Python DAGs):**
+**Airflow YAML Parameters:**
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -381,19 +353,7 @@ my_dag:
 | `airflow_mapping.enabled` | bool | No | Enable Airflow mapping (default: `true`) |
 | `airflow_mapping.dag_id` | str | No | Override DAG ID from Python file |
 
-**dag-factory YAML Parameters:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `default.start_date` | date | No | Default start date for all DAGs |
-| `<dag_id>.schedule` | str | No | Cron or preset (`@daily`, `@hourly`) |
-| `<dag_id>.description` | str | No | DAG description |
-| `<dag_id>.tags` | list[str] | No | DAG tags |
-| `<dag_id>.tasks.<task_id>.decorator` | str | Yes | Task decorator (e.g., `airflow.sdk.task`) |
-| `<dag_id>.tasks.<task_id>.python_callable` | str | Yes | Python function path |
-| `<dag_id>.tasks.<task_id>.outlets` | list[dict] | No | Assets produced by task |
-| `<dag_id>.tasks.<task_id>.dependencies` | list[str] | No | Upstream task IDs |
-| XCom params (e.g., `data: +task_id`) | str | No | Pull XCom from upstream task |
+**Note:** dag-factory YAML files (Airflow's YAML DAG format) are also supported. These use Airflow's native dag-factory schema and don't require additional companion YAML files. See [Airflow dag-factory documentation](https://github.com/astronomer/dag-factory) for YAML format details.
 
 #### Prefect Flows
 
