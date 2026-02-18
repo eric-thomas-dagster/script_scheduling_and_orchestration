@@ -358,11 +358,18 @@ schedule:
 depends_on:
   - other_script_name         # Other scripts this depends on
 
-# Partitioning
-partitions:
-  type: daily                 # daily, hourly, weekly, monthly
-  start_date: "2024-01-01"   # Start date for partitions
-  end_date: null             # End date (null = ongoing)
+# Partitioning (time-based)
+partition:
+  parameter: date             # Script parameter name for partition key
+  schedule: daily             # daily, hourly, weekly, monthly
+  start_date: "2024-01-01"   # Start date for partitions (defaults to 30 days ago)
+  timezone: "UTC"            # Timezone for schedule (default: UTC)
+  date_format: "%Y-%m-%d"    # Date format passed to script (default: %Y-%m-%d)
+
+# Partitioning (static list - alternative to time-based)
+# partition:
+#   parameter: region
+#   values: [us, uk, de, jp]
 
 # Retry Policy
 retry_policy:
@@ -387,9 +394,77 @@ timeout: 3600                 # Timeout in seconds
 | `script_type` | str | No | Must be `"python"` |
 | `schedule` | dict | No | Cron schedule configuration |
 | `depends_on` | list[str] | No | List of asset keys this depends on |
-| `partitions` | dict | No | Time-based partitioning config |
+| `partition` | dict | No | Time-based partitioning config (see below) |
 | `retry_policy` | dict | No | Retry behavior configuration |
 | `timeout` | int | No | Execution timeout in seconds |
+
+**Partition Configuration:**
+
+Partitions allow you to process data in chunks - either time-based (daily, hourly) or static lists (regions, customers, etc.).
+
+**How partition keys are passed to your script:**
+- **Without config**: Partition key is passed as a **positional argument** (`sys.argv[1]`)
+- **With argparse config**: Partition key is passed as `--<parameter> <value>`
+- **With sys.argv config**: Partition key is appended after other positional arguments
+
+```python
+# WITHOUT config (positional argument):
+# python script.py 2024-01-15
+import sys
+partition_key = sys.argv[1] if len(sys.argv) > 1 else None
+
+# WITH argparse config (named argument):
+# python script.py --output-dir /tmp --region us
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--output-dir', type=str)
+parser.add_argument('--region', type=str)  # partition parameter
+args = parser.parse_args()
+partition_key = args.region
+```
+
+**Time-Based Partitions** (daily, hourly, weekly, monthly):
+
+```yaml
+partition:
+  parameter: date
+  schedule: daily             # hourly, daily, weekly, or monthly
+  start_date: "2024-01-01"   # Optional
+  timezone: "UTC"            # Optional
+  date_format: "%Y-%m-%d"    # Optional
+```
+
+**Static Partitions** (fixed list like regions, customers):
+
+```yaml
+partition:
+  parameter: region
+  values:                     # List of partition keys
+    - us
+    - uk
+    - de
+    - jp
+```
+
+**Dynamic Partitions** (partitions that can be added/removed at runtime):
+
+```yaml
+partition:
+  parameter: customer_id
+  dynamic: true               # Allows adding partitions via Dagster UI
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `partition.parameter` | str | Yes | Name of the parameter (for documentation/metadata) |
+| `partition.schedule` | str | No | Time-based: `hourly`, `daily`, `weekly`, `monthly` |
+| `partition.values` | list[str] | No | Static: List of partition keys (e.g., `["us", "uk", "de"]`) |
+| `partition.dynamic` | bool | No | Dynamic: Allow runtime partition management (default: `false`) |
+| `partition.start_date` | str | No | Time-based: Start date YYYY-MM-DD (default: 30 days ago) |
+| `partition.timezone` | str | No | Time-based: Timezone (default: `UTC`) |
+| `partition.date_format` | str | No | Time-based: Date format (default: `%Y-%m-%d`) |
+
+**Note:** Choose ONE partition type: `schedule` (time-based), `values` (static), OR `dynamic`.
 
 #### Airflow DAGs
 

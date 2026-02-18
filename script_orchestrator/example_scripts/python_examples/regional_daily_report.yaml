@@ -1,0 +1,33 @@
+enabled: true
+script_type: python
+description: "Regional daily report with both config and partition"
+group: test_examples
+owners:
+  - "team:analytics"
+tags:
+  type: reporting
+  demonstrates: config_and_partition
+kinds:
+  - python
+  - regional
+  - config
+
+# Static partition - one per region
+partition:
+  parameter: region
+  values:
+    - us
+    - uk
+    - de
+    - jp
+
+# Dagster config - passed as argparse arguments
+config:
+  output_dir:
+    type: string
+    default: "/tmp/reports"
+    description: "Output directory for reports"
+  email_recipients:
+    type: string
+    default: "team@example.com"
+    description: "Comma-separated email recipients"

@@ -1,0 +1,22 @@
+enabled: true
+script_type: python
+description: "Regional report generator with static region partitions"
+group: test_examples
+owners:
+  - "team:analytics"
+tags:
+  type: reporting
+  demonstrates: static_partitions
+kinds:
+  - python
+  - regional
+
+# Static partition configuration - one partition per region
+partition:
+  parameter: region         # Parameter name (for documentation)
+  values:                   # Static list of regions
+    - us
+    - uk
+    - de
+    - jp
+    - au

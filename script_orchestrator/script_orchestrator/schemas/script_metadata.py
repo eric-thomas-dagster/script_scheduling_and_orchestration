@@ -54,12 +54,14 @@ class AirflowMappingConfig(BaseModel):
 
 
 class PartitionConfig(BaseModel):
-    """Partition configuration for time-based partitioning."""
+    """Partition configuration for time-based or static partitioning."""
 
     parameter: str = Field(..., description="Name of the script parameter to use as partition key")
-    schedule: str = Field(
-        default="daily",
-        description="Partition schedule: hourly, daily, weekly, monthly"
+
+    # Time-based partitioning fields
+    schedule: Optional[str] = Field(
+        default=None,
+        description="Partition schedule: hourly, daily, weekly, monthly (for time-based partitions)"
     )
     start_date: Optional[str] = Field(
         default=None,
@@ -69,6 +71,16 @@ class PartitionConfig(BaseModel):
     date_format: str = Field(
         default="%Y-%m-%d",
         description="Date format string for passing to script (strftime format)"
+    )
+
+    # Static partitioning fields
+    values: Optional[List[str]] = Field(
+        default=None,
+        description="Static list of partition values (e.g., ['us', 'uk', 'ca', 'de'])"
+    )
+    dynamic: bool = Field(
+        default=False,
+        description="Use dynamic partitions (values can be added/removed at runtime)"
     )
 
 

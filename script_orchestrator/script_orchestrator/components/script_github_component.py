@@ -1025,6 +1025,24 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
     def _create_partition_definition(self, partition_config):
         """Create a Dagster partition definition from partition config."""
+        # Check for static partitions first
+        if partition_config.values:
+            logger.info(f"Creating static partitions with {len(partition_config.values)} values")
+            return StaticPartitionsDefinition(partition_config.values)
+
+        # Check for dynamic partitions
+        if partition_config.dynamic:
+            partition_name = f"{partition_config.parameter}_partitions"
+            logger.info(f"Creating dynamic partitions: {partition_name}")
+            return DynamicPartitionsDefinition(name=partition_name)
+
+        # Fall back to time-based partitions
+        if not partition_config.schedule:
+            # Default to daily if no schedule specified
+            schedule = "daily"
+        else:
+            schedule = partition_config.schedule.lower()
+
         # Determine start date
         if partition_config.start_date:
             start_date = partition_config.start_date
@@ -1033,7 +1051,6 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             start_date = default_start.strftime("%Y-%m-%d")
 
         timezone = partition_config.timezone
-        schedule = partition_config.schedule.lower()
 
         if schedule == "hourly":
             return HourlyPartitionsDefinition(
@@ -2890,7 +2907,14 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             partitions_def = self._create_partition_definition(metadata.partition)
             partition_param_name = metadata.partition.parameter
             partition_date_format = metadata.partition.date_format
-            logger.info(f"Created {metadata.partition.schedule} partitions for {script_info.name}")
+            # Determine partition type for logging
+            if metadata.partition.values:
+                partition_type = f"static ({len(metadata.partition.values)} partitions)"
+            elif metadata.partition.dynamic:
+                partition_type = "dynamic"
+            else:
+                partition_type = metadata.partition.schedule or "daily"
+            logger.info(f"Created {partition_type} partitions for {script_info.name}")
         
         # Define asset function based on features (config and/or partitions)
         if flow_config_class and partitions_def:
@@ -2900,17 +2924,27 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 context.log.info(f"Script config: {config}")
                 partition_key = context.partition_key if context.has_partition_key else "default"
                 context.log.info(f"Partition: {partition_key}")
-                
+
                 try:
                     start_time = datetime.now()
                     python_cmd = ["uv", "run", "python", str(script_info.script_path)]
-                    
+
                     config_source = getattr(flow_config_class, '_source', None)
                     if config_source in ('argparse', 'sys.argv'):
                         parameters = getattr(flow_config_class, '_parameters', [])
                         cli_args = self._build_cli_arguments(config, parameters, config_source)
+
+                        # Add partition as a CLI argument (not positional, since config takes positions)
+                        if config_source == 'argparse':
+                            # For argparse, add as --<parameter> <value>
+                            cli_args.append(f"--{partition_param_name}")
+                            cli_args.append(partition_key)
+                        elif config_source == 'sys.argv':
+                            # For sys.argv, append as positional after other args
+                            cli_args.append(partition_key)
+
                         python_cmd.extend(cli_args)
-                        context.log.info(f"CLI arguments: {cli_args}")
+                        context.log.info(f"CLI arguments (with partition): {cli_args}")
                     
                     result = subprocess.run(
                         python_cmd,
