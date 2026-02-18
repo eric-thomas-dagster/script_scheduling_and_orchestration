@@ -1,0 +1,18 @@
+enabled: true
+description: "Data pipeline with asset-based scheduling using Airflow 3.x"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  version: "3.x"
+  pattern: "producer_consumer"
+  complexity: "intermediate"
+kinds:
+  - python
+  - airflow
+  - assets
+script_type: airflow
+
+airflow_mapping:
+  enabled: true

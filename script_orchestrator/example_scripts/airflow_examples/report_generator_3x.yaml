@@ -1,0 +1,20 @@
+enabled: true
+description: "Daily report generator with parallel tasks using Airflow 3.x"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+  - "team:reporting"
+tags:
+  category: "airflow"
+  version: "3.x"
+  pattern: "parallel_tasks"
+  complexity: "intermediate"
+kinds:
+  - python
+  - airflow
+  - reporting
+script_type: airflow
+
+airflow_mapping:
+  enabled: true
+  dag_id: "daily_report_3x"

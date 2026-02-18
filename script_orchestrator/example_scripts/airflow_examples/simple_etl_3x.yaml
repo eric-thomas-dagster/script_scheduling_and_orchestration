@@ -1,0 +1,18 @@
+enabled: true
+description: "Simple ETL pipeline using Airflow 3.x syntax"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  version: "3.x"
+  complexity: "simple"
+kinds:
+  - python
+  - airflow
+  - etl
+script_type: airflow
+
+airflow_mapping:
+  enabled: true
+  dag_id: "simple_etl_3x"
