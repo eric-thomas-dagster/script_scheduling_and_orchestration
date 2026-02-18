@@ -1,0 +1,21 @@
+enabled: true
+description: "Customer insights report generator (consumes processed_customer_data asset)"
+group: airflow_examples
+owners:
+  - "team:analytics"
+  - "team:reporting"
+tags:
+  category: "airflow"
+  version: "3.x"
+  pattern: "cross_dag_consumer"
+  complexity: "intermediate"
+kinds:
+  - python
+  - airflow
+  - reporting
+  - cross-dag-lineage
+script_type: airflow
+
+airflow_mapping:
+  enabled: true
+  dag_id: "generate_customer_report_3x"

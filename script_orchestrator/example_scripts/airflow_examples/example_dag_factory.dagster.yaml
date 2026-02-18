@@ -1,0 +1,14 @@
+enabled: true
+description: "Example DAG Factory with customer ETL, product sync, and analytics report"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  pattern: "dag_factory"
+  complexity: "intermediate"
+kinds:
+  - airflow
+  - dag-factory
+  - yaml
+script_type: airflow

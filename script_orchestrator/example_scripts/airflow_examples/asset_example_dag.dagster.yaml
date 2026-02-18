@@ -1,0 +1,15 @@
+enabled: true
+description: "Asset-based orchestration with producer/consumer pattern (Airflow 3.x)"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  version: "3.x"
+  pattern: "asset_scheduling"
+  complexity: "intermediate"
+kinds:
+  - airflow
+  - dag-factory
+  - assets
+script_type: airflow

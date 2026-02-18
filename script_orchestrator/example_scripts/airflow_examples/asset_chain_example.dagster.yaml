@@ -1,0 +1,15 @@
+enabled: true
+description: "Asset chain example showing multi-stage data pipeline"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  version: "3.x"
+  pattern: "asset_chain"
+  complexity: "intermediate"
+kinds:
+  - airflow
+  - dag-factory
+  - assets
+script_type: airflow

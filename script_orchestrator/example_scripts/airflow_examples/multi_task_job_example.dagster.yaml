@@ -1,0 +1,15 @@
+enabled: true
+description: "Multi-task job example with parallel execution"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  pattern: "dag_factory"
+  feature: "parallel_tasks"
+  complexity: "intermediate"
+kinds:
+  - airflow
+  - dag-factory
+  - yaml
+script_type: airflow

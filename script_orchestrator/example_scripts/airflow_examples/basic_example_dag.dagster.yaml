@@ -1,0 +1,14 @@
+enabled: true
+description: "Basic example DAG demonstrating simple task dependencies"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  pattern: "dag_factory"
+  complexity: "simple"
+kinds:
+  - airflow
+  - dag-factory
+  - yaml
+script_type: airflow

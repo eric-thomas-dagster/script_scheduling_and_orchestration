@@ -787,17 +787,33 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     script_name = f"dag_factory_{yaml_file.stem}"
                     logger.warning(f"🔵 NEW CODE RUNNING: Creating single ScriptInfo '{script_name}' for {len(dag_ids)} DAGs")
 
-                    metadata = ScriptMetadata(
-                        enabled=True,
-                        script_type="airflow",
-                        description=f"DAG Factory YAML with {len(dag_ids)} DAG(s): {', '.join(dag_ids)}",
-                        kinds=["airflow", "dag-factory", "yaml"],
-                        tags={
-                            "source": "dag_factory_yaml",
-                            "yaml_file": yaml_file.name,
-                            "dag_count": str(len(dag_ids)),
-                        },
-                    )
+                    # Look for companion metadata file for dag-factory YAMLs
+                    # Pattern: example_dag_factory.yaml -> example_dag_factory.dagster.yaml
+                    companion_yaml = yaml_file.parent / f"{yaml_file.stem}.dagster.yaml"
+                    metadata = None
+
+                    if companion_yaml.exists():
+                        try:
+                            companion_content = companion_yaml.read_text()
+                            metadata_dict = yaml.safe_load(companion_content)
+                            metadata = ScriptMetadata(**metadata_dict)
+                            logger.info(f"Loaded companion metadata from {companion_yaml.name} for {yaml_file.name}")
+                        except Exception as e:
+                            logger.warning(f"Could not parse companion file {companion_yaml}: {e}")
+
+                    # Fall back to default metadata if no companion file
+                    if metadata is None:
+                        metadata = ScriptMetadata(
+                            enabled=True,
+                            script_type="airflow",
+                            description=f"DAG Factory YAML with {len(dag_ids)} DAG(s): {', '.join(dag_ids)}",
+                            kinds=["airflow", "dag-factory", "yaml"],
+                            tags={
+                                "source": "dag_factory_yaml",
+                                "yaml_file": yaml_file.name,
+                                "dag_count": str(len(dag_ids)),
+                            },
+                        )
 
                     scripts.append(
                         ScriptInfo(

@@ -1,25 +1,33 @@
 """
-Report generator using Airflow 3.x syntax with task dependencies.
-Demonstrates parallel task execution, downstream aggregation, and asset production.
+Report generator using Airflow 3.x syntax with cross-DAG dependencies.
+Demonstrates parallel task execution, downstream aggregation, asset consumption, and production.
+
+This DAG is triggered when simple_etl_3x produces the clean_etl_data asset,
+showing cross-DAG lineage: simple_etl_3x → daily_report_3x
 """
 from datetime import datetime
 
 from airflow.sdk import Asset, dag, task
 
 
-# Define the output asset
+# Define assets - consume ETL output and produce daily report
+clean_etl_data_asset = Asset("clean_etl_data")
 daily_report_asset = Asset("daily_report")
 
 
 @dag(
     dag_id="daily_report_3x",
     start_date=datetime(2024, 1, 1),
-    schedule="0 6 * * *",  # Daily at 6 AM
+    schedule=[clean_etl_data_asset],  # Triggered by clean_etl_data updates
     catchup=False,
-    tags=["reporting", "3.x", "parallel"],
+    tags=["reporting", "3.x", "parallel", "cross-dag"],
 )
 def daily_report_pipeline():
-    """Generate daily report by gathering data from multiple sources."""
+    """Generate daily report by gathering data from multiple sources.
+
+    Triggered by the clean_etl_data asset from simple_etl_3x DAG.
+    Demonstrates cross-DAG lineage and asset-based scheduling.
+    """
 
     @task
     def fetch_sales_data() -> dict:

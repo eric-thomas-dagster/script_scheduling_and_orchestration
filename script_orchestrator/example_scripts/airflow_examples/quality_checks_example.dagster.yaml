@@ -1,0 +1,16 @@
+enabled: true
+description: "Data quality checks example"
+group: airflow_examples
+owners:
+  - "team:data_quality"
+tags:
+  category: "airflow"
+  pattern: "dag_factory"
+  feature: "quality_checks"
+  complexity: "intermediate"
+kinds:
+  - airflow
+  - dag-factory
+  - yaml
+  - data-quality
+script_type: airflow

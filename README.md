@@ -324,7 +324,12 @@ attributes:
 
 ### Script Companion YAML Files
 
-Each script can have a companion `.yaml` file with the same name. The available options depend on the script type.
+Each script can have a companion YAML file for Dagster-specific metadata (group, owners, tags, schedules, etc.):
+
+- **Python/Airflow scripts**: `example.py` → `example.yaml`
+- **dag-factory YAMLs**: `example_dag_factory.yaml` → `example_dag_factory.dagster.yaml`
+
+The available options depend on the script type.
 
 #### Python Scripts
 
@@ -419,7 +424,27 @@ airflow_mapping:
 | `airflow_mapping.enabled` | bool | No | Enable Airflow mapping (default: `true`) |
 | `airflow_mapping.dag_id` | str | No | Override DAG ID from Python file |
 
-**Note:** dag-factory YAML files (Airflow's YAML DAG format) are also supported. These use Airflow's native dag-factory schema and don't require additional companion YAML files. See [Airflow dag-factory documentation](https://github.com/astronomer/dag-factory) for YAML format details.
+**dag-factory YAML Companion Files:**
+
+dag-factory YAML files (Airflow's YAML DAG format) use Airflow's native schema for DAG definitions. To specify Dagster-specific metadata (group, owners, tags, etc.), create a companion file with the `.dagster.yaml` suffix:
+
+```yaml
+# example_dag_factory.yaml (Airflow dag-factory format)
+customer_etl:
+  schedule_interval: '@daily'
+  tasks:
+    # ... Airflow DAG definition
+
+# example_dag_factory.dagster.yaml (Dagster metadata companion)
+enabled: true
+group: airflow_examples
+owners: ["team:data_engineering"]
+tags:
+  category: "airflow"
+  pattern: "dag_factory"
+```
+
+The component automatically discovers and loads `.dagster.yaml` companion files. If no companion file exists, default metadata is used with `group: "scripts"`. See [Airflow dag-factory documentation](https://github.com/astronomer/dag-factory) for the dag-factory YAML format.
 
 #### Prefect Flows
 

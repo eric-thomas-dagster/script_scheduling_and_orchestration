@@ -1,0 +1,15 @@
+enabled: true
+description: "XCom example demonstrating task data passing"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  pattern: "dag_factory"
+  feature: "xcom"
+  complexity: "intermediate"
+kinds:
+  - airflow
+  - dag-factory
+  - yaml
+script_type: airflow
