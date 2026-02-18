@@ -1,0 +1,21 @@
+# Dagster instance configuration for local development
+
+# Use in-process run launcher to avoid venv issues with multiprocess executor
+run_launcher:
+  module: dagster._core.launcher.sync_in_memory_run_launcher
+  class: SyncInMemoryRunLauncher
+
+# Unified storage configuration (replaces individual storage configs)
+storage:
+  sqlite:
+    base_dir: .dagster_home
+
+compute_logs:
+  module: dagster._core.storage.local_compute_log_manager
+  class: LocalComputeLogManager
+  config:
+    base_dir: .dagster_home/logs
+
+# Optional: disable telemetry
+telemetry:
+  enabled: false

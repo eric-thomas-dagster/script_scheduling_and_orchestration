@@ -17,7 +17,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -195,7 +195,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
     dag_factory_parser: Optional[Any] = None
 
     # Class variable to track if Airflow DB has been initialized
-    _airflow_db_checked: bool = False
+    _airflow_db_checked: ClassVar[bool] = False
 
     model_config = {"arbitrary_types_allowed": True, "extra": "allow"}
 

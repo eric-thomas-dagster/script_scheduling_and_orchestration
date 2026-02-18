@@ -25,10 +25,39 @@ class AirflowParser(BaseParser):
         """Get installed Airflow version as (major, minor) tuple."""
         try:
             import airflow
-            version_str = airflow.__version__
+            logger.debug("Successfully imported airflow module")
+
+            # Try different ways to get version (varies by Airflow version)
+            version_str = None
+            if hasattr(airflow, '__version__'):
+                version_str = airflow.__version__
+                logger.debug(f"Got version from airflow.__version__: {version_str}")
+            elif hasattr(airflow, 'version'):
+                # Airflow 3.x stores version info differently
+                import airflow.version
+                if hasattr(airflow.version, 'version'):
+                    version_str = airflow.version.version
+                    logger.debug(f"Got version from airflow.version.version: {version_str}")
+
+            if not version_str:
+                # Fallback: try to get from package metadata
+                try:
+                    import importlib.metadata
+                    version_str = importlib.metadata.version('apache-airflow')
+                    logger.debug(f"Got version from importlib.metadata: {version_str}")
+                except Exception as e:
+                    logger.warning(f"Could not get Airflow version from metadata: {e}")
+                    return None
+
             parts = version_str.split('.')
-            return (int(parts[0]), int(parts[1]))
-        except (ImportError, ValueError, IndexError):
+            version_tuple = (int(parts[0]), int(parts[1]))
+            logger.info(f"Detected Airflow version: {version_tuple}")
+            return version_tuple
+        except ImportError as e:
+            logger.warning(f"Could not import Airflow module: {e}")
+            return None
+        except (ValueError, IndexError, AttributeError) as e:
+            logger.warning(f"Could not parse Airflow version: {e}")
             return None
 
     def _detect_dag_airflow_version(self, dag_config: dict) -> str:
@@ -107,7 +136,10 @@ class AirflowParser(BaseParser):
                                             dataset_definitions[target.id] = uri
                                             logger.debug(f"Found {func_name} definition: {target.id} = {uri}")
 
-            # Second pass: Extract tasks and DAGs
+            # Second pass: Extract operator tasks (from operator instantiations)
+            operator_tasks = self._extract_operator_tasks(tree)
+
+            # Third pass: Extract tasks and DAGs
             for node in ast.walk(tree):
                 if isinstance(node, ast.FunctionDef):
                     # Check for @task decorator (Airflow TaskFlow API)
@@ -150,6 +182,7 @@ class AirflowParser(BaseParser):
                             'name': node.name,
                             'dag_id': dag_config.get('dag_id', node.name),
                             'task_calls': task_calls,
+                            'tasks': operator_tasks,  # Operator instantiations (for check operators, etc.)
                             'params': dag_config.get('params', {}),
                             'schedule': dag_config.get('schedule'),
                             'start_date': dag_config.get('start_date'),
@@ -163,6 +196,49 @@ class AirflowParser(BaseParser):
                             'dag_airflow_version': dag_airflow_version,  # Detected Airflow version (e.g., "2.x", "3.x")
                         }
                         dags.append(dag_info)
+
+            # If we found operator tasks but no @dag decorator, this might be a traditional DAG
+            # Create a default DAG entry so check operators can be detected
+            if operator_tasks and not dags:
+                # Try to extract DAG ID from a 'with DAG(...)' statement
+                dag_id = None
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.With):
+                        for item in node.items:
+                            if isinstance(item.context_expr, ast.Call):
+                                if isinstance(item.context_expr.func, ast.Name) and item.context_expr.func.id == 'DAG':
+                                    # Found 'with DAG(...)'
+                                    # Try to extract dag_id from first argument or keyword
+                                    if item.context_expr.args and isinstance(item.context_expr.args[0], ast.Constant):
+                                        dag_id = item.context_expr.args[0].value
+                                    else:
+                                        for kw in item.context_expr.keywords:
+                                            if kw.arg == 'dag_id' and isinstance(kw.value, ast.Constant):
+                                                dag_id = kw.value.value
+                                    break
+                        if dag_id:
+                            break
+
+                if dag_id:
+                    logger.info(f"Detected traditional DAG style: {dag_id}")
+                    dag_info = {
+                        'name': dag_id,
+                        'dag_id': dag_id,
+                        'task_calls': [],
+                        'tasks': operator_tasks,  # Operator instantiations
+                        'params': {},
+                        'schedule': None,
+                        'start_date': None,
+                        'retries': None,
+                        'retry_delay': None,
+                        'tags': [],
+                        'advanced_features': {},
+                        'inlet_datasets': [],
+                        'outlet_datasets': [],
+                        'version_warning': None,
+                        'dag_airflow_version': '2.x',  # Traditional style is typically 2.x
+                    }
+                    dags.append(dag_info)
 
             return tasks, dags
 
@@ -528,7 +604,17 @@ class AirflowParser(BaseParser):
             for task_info in tasks_info:
                 task_name = task_info['name']
                 if hasattr(module, task_name):
-                    task_functions[task_name] = getattr(module, task_name)
+                    task_func = getattr(module, task_name)
+
+                    # Check if this is an Airflow @task decorated function
+                    # These return XComArg objects which contain Jinja templates and can't be pickled
+                    # Detect by checking the type name or if it has Airflow-specific attributes
+                    func_type = type(task_func).__name__
+                    if func_type in ['XComArg', 'TaskDecorator'] or hasattr(task_func, 'operator_class'):
+                        logger.info(f"Task {task_name} uses Airflow @task decorator, falling back to subprocess")
+                        return None
+
+                    task_functions[task_name] = task_func
                 else:
                     logger.warning(f"Task function {task_name} not found in module")
                     return None
@@ -576,15 +662,38 @@ class AirflowParser(BaseParser):
 
             ops_dict[task_name] = make_task_op(task_func, task_name, task_params)
 
+        # Detect resources from Airflow DAG script (for kinds and tags)
+        from ..utils.resource_detector import ResourceDetector
+        detected_resources = []
+        try:
+            detected_resources = ResourceDetector.detect_resources_from_file(script_info.script_path)
+            if detected_resources:
+                resource_names = [r['resource_name'] for r in detected_resources]
+                logger.info(f"🔧 Detected resources in Airflow DAG: {', '.join(resource_names)}")
+        except Exception as e:
+            logger.debug(f"Could not detect resources from {script_info.script_path}: {e}")
+
         # Build asset tags
         asset_tags = {
             **metadata.tags,
             "script_type": "airflow_mapped",
             "script_name": script_info.name,
-            "airflow_dag": dag_id
+            "airflow_dag": dag_id,
+            "dagster/kind/airflow": "",  # Airflow framework kind
         }
         for kind in metadata.kinds:
             asset_tags[f"dagster/kind/{kind}"] = ""
+
+        # Add detected resources as kinds and tags
+        if detected_resources:
+            for resource in detected_resources:
+                resource_name = resource['resource_name']
+                resource_type = resource['resource_type']
+                # Add as kind (shows icon in UI)
+                asset_tags[f"dagster/kind/{resource_name}"] = ""
+                # Add as regular tag for filtering
+                asset_tags[f"uses_{resource_name}"] = ""
+                asset_tags[f"resource_type_{resource_type}"] = ""
 
         # Create ops list in the order they should be called
         ops_list = [ops_dict[tc['task_name']] for tc in task_calls if tc['task_name'] in ops_dict]
@@ -595,6 +704,7 @@ class AirflowParser(BaseParser):
 
         # Create graph asset that explicitly calls ops in sequence
         # We need to build this dynamically so Dagster can statically analyze it
+        # Ops use dagster_type=Nothing to avoid pickling errors with XCom data
         @graph_asset(
             name=f"script_{script_info.name}",
             group_name=metadata.group_name,
@@ -631,3 +741,93 @@ class AirflowParser(BaseParser):
                 return None
 
         return dag_graph
+
+    def _extract_operator_tasks(self, tree: ast.AST) -> List[Dict]:
+        """Extract tasks from operator instantiations (not @task decorators).
+
+        Detects patterns like:
+            SQLColumnCheckOperator(task_id='check', table='users', column_mapping={...})
+            PythonOperator(task_id='run', python_callable=func)
+            BashOperator(task_id='bash', bash_command='echo hi')
+
+        Args:
+            tree: AST tree of the Python file
+
+        Returns:
+            List of task dictionaries with:
+            - task_id: Task identifier
+            - operator_type: Type (sql_column_check, python, bash, etc.)
+            - operator_class: Original class name
+            - parameters: Extracted parameters dict
+        """
+        operator_tasks = []
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                # Check if this is an operator instantiation
+                operator_class = None
+                if isinstance(node.func, ast.Name):
+                    # Direct class call: SQLColumnCheckOperator(...)
+                    operator_class = node.func.id
+                elif isinstance(node.func, ast.Attribute):
+                    # Module call: operators.SQLColumnCheckOperator(...)
+                    operator_class = node.func.attr
+
+                # Check if this looks like an Airflow operator
+                if operator_class and 'Operator' in operator_class:
+                    # Extract parameters
+                    task_id = None
+                    parameters = {}
+
+                    for keyword in node.keywords:
+                        if keyword.arg == 'task_id':
+                            if isinstance(keyword.value, ast.Constant):
+                                task_id = keyword.value.value
+                        else:
+                            # Try to extract parameter value
+                            try:
+                                param_value = ast.literal_eval(keyword.value)
+                                parameters[keyword.arg] = param_value
+                            except:
+                                # Can't evaluate - skip complex expressions
+                                pass
+
+                    if task_id:
+                        operator_type = self._convert_operator_class_to_type(operator_class)
+
+                        operator_tasks.append({
+                            'task_id': task_id,
+                            'operator_type': operator_type,
+                            'operator_class': operator_class,
+                            'parameters': parameters,
+                        })
+                        logger.debug(f"Detected operator task: {task_id} ({operator_class})")
+
+        return operator_tasks
+
+    def _convert_operator_class_to_type(self, operator_class: str) -> str:
+        """Convert operator class name to operator type.
+
+        Examples:
+            SQLColumnCheckOperator -> sql_column_check
+            SQLTableCheckOperator -> sql_table_check
+            SQLCheckOperator -> sql_check
+            PythonOperator -> python
+            BashOperator -> bash
+
+        Args:
+            operator_class: Class name (e.g., "SQLColumnCheckOperator")
+
+        Returns:
+            operator_type string (e.g., "sql_column_check")
+        """
+        import re
+
+        # Remove 'Operator' suffix
+        name = operator_class.replace('Operator', '')
+
+        # Convert CamelCase to snake_case
+        name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
+
+        return name

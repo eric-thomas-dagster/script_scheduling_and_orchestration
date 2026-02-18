@@ -1,15 +1,10 @@
 type: script_orchestrator.components.ScriptGithubComponent
-
 attributes:
   use_local: true
-  scripts_directory: "example_scripts"
-
-  # Orchestrator Configuration
-  # These values override environment variables from .env file
+  scripts_directory: example_scripts
   airflow_enabled: true
-  airflow_version: "3.1"  # Must be quoted to be treated as string
+  airflow_version: '3.1'
   airflow_auto_install: true
-
   prefect_enabled: true
-  prefect_version: null  # null = use whatever's installed
+  prefect_version: null
   prefect_auto_install: true

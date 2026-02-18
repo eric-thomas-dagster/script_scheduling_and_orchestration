@@ -12,10 +12,10 @@ Scripts work unchanged. Resources are detected and used to enhance the Dagster U
 
 ### 1. Automatic Detection
 
-When you point at an external repo with Python scripts:
+When you point at an external repo with Python scripts, Airflow DAGs, or Prefect flows:
 
 ```python
-# Your script (unchanged)
+# Your script (unchanged) - Python, Airflow, or Prefect
 import psycopg2
 import boto3
 import requests
@@ -24,6 +24,12 @@ conn = psycopg2.connect(...)
 s3 = boto3.client('s3', ...)
 response = requests.get(...)
 ```
+
+**Works for:**
+- ✅ Python scripts
+- ✅ Airflow DAG files (`.py`)
+- ✅ Airflow dag-factory YAML (detects from task callables)
+- ✅ Prefect flow files (`.py`)
 
 ### 2. Auto-Generated Tags & Kinds
 
@@ -69,11 +75,15 @@ def my_asset(context):
 - 🐘 PostgreSQL icon/badge
 - ☁️ S3 icon/badge
 - 🌐 HTTP icon/badge
+- 🌊 Airflow icon (for Airflow DAGs)
+- 🔮 Prefect icon (for Prefect flows)
+- **Multiple kinds shown together!** (e.g., both "airflow" and "postgres")
 
 **Filtering:**
 - Show only assets that use PostgreSQL
 - Show only assets that use S3
 - Filter by resource type (database, storage, api)
+- Filter by framework (airflow, prefect, python)
 
 **Metadata View:**
 - See all detected resources
@@ -82,7 +92,161 @@ def my_asset(context):
 
 ---
 
-## Example: Multi-Resource Script
+## Examples
+
+### Example 1: Airflow DAG with Resources
+
+#### Your Airflow DAG (External Repo)
+
+```python
+# dags/etl_pipeline.py
+from airflow import DAG
+from airflow.decorators import task
+import psycopg2
+import boto3
+
+@task
+def extract_from_db():
+    conn = psycopg2.connect(...)
+    # Extract data
+    return data
+
+@task
+def upload_to_s3(data):
+    s3 = boto3.client('s3')
+    # Upload to S3
+
+with DAG('etl_pipeline') as dag:
+    data = extract_from_db()
+    upload_to_s3(data)
+```
+
+#### What Gets Detected
+
+```
+🔧 Detected resources in Airflow DAG: postgres, s3
+```
+
+#### Asset in Dagster UI
+
+Shows **BOTH** framework and resource kinds:
+- 🌊 airflow
+- 🐘 postgres
+- ☁️ s3
+
+Tags for filtering:
+- `dagster/kind/airflow`
+- `dagster/kind/postgres`
+- `dagster/kind/s3`
+- `uses_postgres`
+- `uses_s3`
+- `resource_type_database`
+- `resource_type_storage`
+
+---
+
+### Example 2: Prefect Flow with Resources
+
+#### Your Prefect Flow (External Repo)
+
+```python
+# flows/data_pipeline.py
+from prefect import flow, task
+import redis
+import requests
+
+@task
+def fetch_api_data():
+    response = requests.get('https://api.example.com/data')
+    return response.json()
+
+@task
+def cache_data(data):
+    r = redis.Redis(host='localhost')
+    r.set('data', json.dumps(data))
+
+@flow
+def data_pipeline():
+    data = fetch_api_data()
+    cache_data(data)
+```
+
+#### What Gets Detected
+
+```
+🔧 Detected resources in Prefect flow: http, redis
+```
+
+#### Asset in Dagster UI
+
+Shows **BOTH** framework and resource kinds:
+- 🔮 prefect
+- 🌐 http
+- 💾 redis
+
+Tags for filtering:
+- `dagster/kind/prefect`
+- `dagster/kind/http`
+- `dagster/kind/redis`
+- `uses_http`
+- `uses_redis`
+- `resource_type_api`
+- `resource_type_cache`
+
+---
+
+### Example 4: dag-factory YAML with Resources
+
+#### Your dag-factory YAML
+
+```yaml
+# config/data_pipeline.yaml
+dag:
+  dag_id: data_processing
+  tasks:
+    extract:
+      operator_type: python
+      python_callable: include.tasks.etl_tasks.extract_data
+    transform:
+      operator_type: python
+      python_callable: include.tasks.etl_tasks.transform_data
+```
+
+#### Task Files
+
+```python
+# include/tasks/etl_tasks.py
+import psycopg2
+import pandas as pd
+
+def extract_data():
+    conn = psycopg2.connect(...)
+    df = pd.read_sql("SELECT * FROM users", conn)
+    return df
+
+def transform_data(df):
+    # Transform with pandas
+    return transformed_df
+```
+
+#### What Gets Detected
+
+```
+🔧 Detected resources in Airflow tasks: postgres, pandas
+```
+
+Component resolves `python_callable` paths to actual Python files and detects resources from those files!
+
+#### Asset in Dagster UI
+
+Shows **BOTH** framework and resource kinds:
+- 🌊 airflow
+- 🐘 postgres
+- 📊 pandas
+
+---
+
+### Example 5: Multi-Resource Script
 
 ### Your Script (External Repo)
 
@@ -279,6 +443,36 @@ Resource Types:
 
 ---
 
+## How It Works Across Frameworks
+
+### For Python Scripts
+- Directly analyzes the script file
+- Detects all imports
+- Adds resource kinds/tags to the asset
+
+### For Airflow DAGs
+- Analyzes the DAG Python file for imports
+- Adds **both** `airflow` kind AND detected resource kinds
+- Shows multiple badges in UI
+
+### For dag-factory YAML
+- Reads the YAML configuration
+- Resolves `python_callable` paths to actual Python files
+  - Example: `include.tasks.etl.extract` → `include/tasks/etl.py`
+- Detects resources from all task files
+- Deduplicates across all tasks
+- Adds **both** `airflow` kind AND detected resource kinds
+- Works for both assets (with outlets) and op jobs (asset_schedule)
+
+### For Prefect Flows
+- Analyzes the Prefect flow Python file for imports
+- Adds **both** `prefect` kind AND detected resource kinds
+- Shows multiple badges in UI
+
+**Key Insight:** The same resource detector works across all frameworks, just pointed at different Python files!
+
+---
+
 ## Supported Resources (30+)
 
 All detected and added as kinds/tags:
@@ -392,12 +586,24 @@ def my_asset(context):
 
 **Solution:** Detect resources → Add tags/kinds/metadata
 
+**Supports:**
+- ✅ Python scripts
+- ✅ Airflow DAG files
+- ✅ Airflow dag-factory YAML (detects from task callables)
+- ✅ Prefect flow files
+- ✅ All orchestration frameworks + their resource usage
+
 **Result:**
 - 📜 Scripts run unchanged
-- 🏷️ Assets automatically tagged
-- 🎨 UI shows icons/badges
-- 🔍 Powerful filtering
-- 📊 Clear visibility
-- 🔒 Security insights
+- 🏷️ Assets automatically tagged with **multiple kinds** (framework + resources)
+- 🎨 UI shows icons/badges for both framework and resources
+- 🔍 Powerful filtering by framework OR resource type
+- 📊 Clear visibility into what each asset uses
+- 🔒 Security insights across all frameworks
+
+**Examples:**
+- Airflow DAG → Shows "airflow" + "postgres" + "s3" kinds
+- Prefect flow → Shows "prefect" + "http" + "redis" kinds
+- Python script → Shows detected resources only
 
 **Zero user work. Maximum value.** 🎉

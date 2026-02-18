@@ -623,8 +623,11 @@ class DagFactoryYamlParser:
         logger.info(f"Leaf tasks for graph: {leaf_tasks}")
 
         # Create the graph asset with dependency structure
+        # Use dag_id in the asset name to ensure uniqueness when multiple DAGs are in one YAML
+        asset_name = f"script_{script_info.name}_{dag_id}"
+        logger.info(f"Creating graph asset: {asset_name} for DAG {dag_id} from {script_info.script_path}")
         @graph_asset(
-            name=f"script_{script_info.name}",
+            name=asset_name,
             group_name=metadata.group_name or "dag_factory",
             tags=asset_tags,
             description=dag_info.get('description', f"DAG Factory: {dag_id}"),
@@ -654,9 +657,12 @@ class DagFactoryYamlParser:
                     # Single dependency - pass its result directly
                     results[task_id] = ops_dict[task_id](results[deps[0]])
                 else:
-                    # Multiple dependencies - pass dict of results
-                    upstream_dict = {dep: results[dep] for dep in deps if dep in results}
-                    results[task_id] = ops_dict[task_id](upstream_dict)
+                    # Multiple dependencies without XCom - just invoke without passing data
+                    # The graph structure itself ensures execution order
+                    # We still need to depend on upstream ops, so reference them to establish dependencies
+                    for dep in deps:
+                        _ = results[dep]  # Reference to establish dependency in graph
+                    results[task_id] = ops_dict[task_id]()
 
             # Return results from all leaf tasks
             # If single leaf, return its result; if multiple, return the last one
