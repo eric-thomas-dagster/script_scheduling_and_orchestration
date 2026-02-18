@@ -669,10 +669,45 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
         return repo
 
+    def _is_airflow_version_compatible(self, detected_version: str) -> bool:
+        """
+        Check if a DAG's detected version is compatible with the installed Airflow version.
+
+        Args:
+            detected_version: "2.x" or "3.x"
+
+        Returns:
+            True if compatible, False otherwise
+        """
+        if not self.airflow_parser or not self.airflow_parser._airflow_version:
+            # Can't determine compatibility without version info
+            return True
+
+        installed_major, _ = self.airflow_parser._airflow_version
+
+        # Extract major version from detected version (e.g., "2.x" -> 2)
+        try:
+            detected_major = int(detected_version.split('.')[0])
+        except (ValueError, IndexError):
+            # Can't parse, assume compatible
+            return True
+
+        # Check if major versions match
+        compatible = detected_major == installed_major
+
+        if not compatible:
+            logger.info(
+                f"Version mismatch: DAG written for Airflow {detected_version}, "
+                f"but Airflow {installed_major}.x is installed"
+            )
+
+        return compatible
+
     def _discover_scripts(self, scripts_dir: Path) -> List[ScriptInfo]:
         """Discover all Python scripts with optional YAML configuration."""
         scripts = []
         discovered_yaml_files = set()
+        skipped_version_mismatch = []
 
         for script_file in scripts_dir.rglob("*.py"):
             # Skip __init__.py and hidden files
@@ -732,6 +767,18 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
                     # Parse the YAML to get all DAGs for metadata
                     dags = self.dag_factory_parser.parse_dag_factory_yaml(yaml_file)
+
+                    # Check version compatibility
+                    if dags and 'dag_airflow_version' in dags[0]:
+                        detected_version = dags[0]['dag_airflow_version']
+                        if not self._is_airflow_version_compatible(detected_version):
+                            logger.warning(
+                                f"⏭️  Skipping {yaml_file.name} - requires Airflow {detected_version}, "
+                                f"but Airflow {self.airflow_parser._airflow_version[0]}.x is installed"
+                            )
+                            skipped_version_mismatch.append(yaml_file.name)
+                            continue
+
                     dag_ids = [dag_info['dag_id'] for dag_info in dags]
                     logger.info(f"Discovered dag-factory YAML with {len(dag_ids)} DAG(s): {dag_ids} from {yaml_file}")
 
@@ -760,6 +807,13 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                             metadata=metadata,
                         )
                     )
+
+        # Log summary of version compatibility filtering
+        if skipped_version_mismatch:
+            logger.warning(
+                f"⏭️  Skipped {len(skipped_version_mismatch)} Airflow DAG(s) due to version mismatch: "
+                f"{', '.join(skipped_version_mismatch)}"
+            )
 
         return scripts
 
@@ -1237,6 +1291,15 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 tasks, dags = self._parse_airflow_dag(script_info.script_path)
                 if dags:
                     dag_info = dags[0]
+
+                    # Check Airflow version compatibility
+                    detected_version = dag_info.get('dag_airflow_version', '3.x')
+                    if not self._is_airflow_version_compatible(detected_version):
+                        logger.warning(
+                            f"⏭️  Skipping {script_info.name} - requires Airflow {detected_version}, "
+                            f"but Airflow {self.airflow_parser._airflow_version[0]}.x is installed"
+                        )
+                        return None  # Skip this DAG
 
                     # Extract schedule and retry config from DAG
                     dag_schedule = dag_info.get('schedule')
