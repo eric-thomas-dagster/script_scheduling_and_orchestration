@@ -46,6 +46,22 @@ class DagFactoryYamlParser:
             logger.debug(f"Error checking if {yaml_path} is dag-factory YAML: {e}")
             return False
 
+    def _detect_yaml_airflow_version(self, yaml_content: str) -> str:
+        """
+        Detect which Airflow version a dag-factory YAML was written for.
+        Returns "2.x" or "3.x".
+        """
+        # Check for 3.x syntax
+        if 'airflow.sdk' in yaml_content or '__type__: airflow.sdk' in yaml_content:
+            return "3.x"
+
+        # Check for 2.x syntax
+        if 'airflow.decorators' in yaml_content:
+            return "2.x"
+
+        # Default to 3.x for dag-factory (it's the modern format)
+        return "3.x"
+
     def parse_dag_factory_yaml(self, yaml_path: Path) -> List[Dict[str, Any]]:
         """Parse a dag-factory YAML file and return list of DAG definitions.
 
@@ -67,10 +83,17 @@ class DagFactoryYamlParser:
             - tags: list
             - asset_outlets: list of assets produced by this DAG
             - asset_schedule: list of assets that trigger this DAG
+            - dag_airflow_version: str (e.g., "2.x" or "3.x")
         """
         try:
             with open(yaml_path, 'r') as f:
-                data = yaml.safe_load(f)
+                yaml_content = f.read()
+
+            # Detect Airflow version from YAML content
+            dag_airflow_version = self._detect_yaml_airflow_version(yaml_content)
+            logger.info(f"Detected {yaml_path.name} as Airflow {dag_airflow_version} based on YAML syntax")
+
+            data = yaml.safe_load(yaml_content)
 
             # Parse global defaults
             global_defaults = data.pop('default', {})
@@ -124,6 +147,7 @@ class DagFactoryYamlParser:
                     'task_dependencies': {},
                     'xcom_dependencies': {},  # Track XCom passing between tasks
                     'asset_outlets': [],  # Assets produced by this DAG
+                    'dag_airflow_version': dag_airflow_version,  # Detected Airflow version
                 }
 
                 # Parse tasks
