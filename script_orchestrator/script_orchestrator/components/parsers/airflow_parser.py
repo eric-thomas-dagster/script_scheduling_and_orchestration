@@ -60,18 +60,57 @@ class AirflowParser(BaseParser):
             logger.warning(f"Could not parse Airflow version: {e}")
             return None
 
-    def _detect_dag_airflow_version(self, dag_config: dict) -> str:
+    def _detect_dag_airflow_version_from_imports(self, script_path: Path) -> str:
         """
-        Detect which Airflow version a DAG was written for based on syntax features.
+        Detect which Airflow version a DAG was written for based on import statements.
         Returns a version string like "2.x" or "3.x".
         """
+        try:
+            content = script_path.read_text()
+
+            # Airflow 2.x imports
+            airflow_2x_patterns = [
+                'from airflow.decorators import',
+                'from airflow.operators.python import',
+                'from airflow.models.param import Param',
+                'from airflow.operators.python import get_current_context',
+            ]
+
+            # Airflow 3.x imports
+            airflow_3x_patterns = [
+                'from airflow.sdk import',
+                'from airflow.providers.standard.operators',
+            ]
+
+            has_2x_imports = any(pattern in content for pattern in airflow_2x_patterns)
+            has_3x_imports = any(pattern in content for pattern in airflow_3x_patterns)
+
+            if has_2x_imports and not has_3x_imports:
+                return "2.x"
+            elif has_3x_imports:
+                return "3.x"
+
+            # Default to 3.x if no clear indicators
+            return "3.x"
+
+        except Exception as e:
+            logger.debug(f"Could not detect version from imports: {e}")
+            return "3.x"
+
+    def _detect_dag_airflow_version(self, dag_config: dict, script_path: Path) -> str:
+        """
+        Detect which Airflow version a DAG was written for based on syntax features and imports.
+        Returns a version string like "2.x" or "3.x".
+        """
+        # First check imports (most reliable)
+        version_from_imports = self._detect_dag_airflow_version_from_imports(script_path)
+
         # Feature: outlets in @dag decorator (Airflow 2.x only, removed in 3.x)
         if 'outlet_datasets' in dag_config:
             return "2.x"
 
-        # Default to 3.x if no 2.x-specific features detected
-        # (This is a safe default as 3.x is more permissive)
-        return "3.x"
+        # Use import detection result
+        return version_from_imports
 
     def _detect_airflow_version_requirements(self, dag_config: dict, script_path: Path) -> Optional[str]:
         """
@@ -158,7 +197,8 @@ class AirflowParser(BaseParser):
                         dag_config = self._extract_dag_config(node)
 
                         # Detect which Airflow version this DAG was written for
-                        dag_airflow_version = self._detect_dag_airflow_version(dag_config)
+                        dag_airflow_version = self._detect_dag_airflow_version(dag_config, script_path)
+                        logger.info(f"Detected {script_path.name} as Airflow {dag_airflow_version} based on imports and syntax")
 
                         # Check for Airflow version compatibility issues
                         version_warning = self._detect_airflow_version_requirements(dag_config, script_path)
