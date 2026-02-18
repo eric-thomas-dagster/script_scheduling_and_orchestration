@@ -62,3 +62,9 @@ Thumbs.db
 # Environment
 .env.local
 .env.*.local
+
+# UV lock file (project-specific, might want to commit for reproducibility)
+# uv.lock
+
+# Python egg
+*.egg-info/

@@ -1,62 +1,22 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+# Session documentation (not needed in git)
+SESSION_*.md
+TESTING.md
+IMPLEMENTATION_*.md
+ENHANCEMENT_*.md
+RESOURCE_DETECTION*.md
+AIRFLOW_CHECK_OPERATORS.md
+STANDARD_DAG_SUPPORT.md
+XCOM_IMPLEMENTATION.md
+DEMO_*.md
+EXECUTOR_*.md
+DEPLOYMENT.md
+ORGANIZATION_*.md
+CONFIG_SUPPORT_STATUS.md
+AIRFLOW_*.md
 
-# Virtual environments
-venv/
-env/
-ENV/
-.venv
-
-# Dagster
-.tmp_dagster_home*/
+# Dagster temp
+.tmp_dagster_home_*/
 .dagster_home/
-dagster_home/
-dagster.yaml
-storage/
-.telemetry/
-.nux/
-*.db
-*.db-shm
-*.db-wal
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# uv
-uv.lock
-
-# Logs
-*.log
-logs/
-
-# Test files
-.pytest_cache/
-.coverage
-htmlcov/
+# Python egg
+*.egg-info/

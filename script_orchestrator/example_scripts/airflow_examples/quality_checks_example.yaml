@@ -1,0 +1,66 @@
+# Example: Airflow DAG with Quality Check Operators
+# Demonstrates SQL column and table checks that become Dagster Asset Checks
+
+dag:
+  dag_id: data_quality_pipeline
+  description: "Data pipeline with quality checks"
+  schedule: "0 2 * * *"
+
+  # Define dataset outputs (Airflow 3.x)
+  outlets:
+    - dataset://localhost/validated_users
+
+  tasks:
+    # Extract users from database
+    extract_users:
+      operator_type: python
+      python_callable: include.tasks.example_tasks.extract_users_data
+
+    # Validate column-level data quality
+    validate_user_columns:
+      operator_type: sql_column_check
+      parameters:
+        table: users
+        column_mapping:
+          email:
+            # Check no null emails
+            null_check:
+              equals: 0
+            # Check email format (has @ symbol)
+            unique_check:
+              equals: 1
+          age:
+            # Check age is reasonable
+            min:
+              greater_than: 0
+            max:
+              less_than: 120
+          created_at:
+            # Check dates are not in future
+            max:
+              less_than_or_equal: CURRENT_TIMESTAMP
+      dependencies:
+        - extract_users
+
+    # Validate table-level data quality
+    validate_user_table:
+      operator_type: sql_table_check
+      parameters:
+        table: users
+        checks:
+          # Check table has data
+          row_count_check:
+            greater_than: 0
+          # Check reasonable data volume
+          row_count_range:
+            greater_than: 100
+            less_than: 10000000
+      dependencies:
+        - validate_user_columns
+
+    # Load validated data
+    load_validated_users:
+      operator_type: python
+      python_callable: include.tasks.example_tasks.load_validated_data
+      dependencies:
+        - validate_user_table
