@@ -25,20 +25,25 @@ dagster_home/
 **/scripts_state.json
 
 # Documentation (session notes, not needed in git)
+# Keep only README.md files
 **/SESSION_*.md
 **/TESTING.md
 **/IMPLEMENTATION_*.md
 **/ENHANCEMENT_*.md
 **/RESOURCE_DETECTION*.md
-**/AIRFLOW_CHECK_OPERATORS.md
+**/AIRFLOW_*.md
 **/STANDARD_DAG_SUPPORT.md
 **/XCOM_IMPLEMENTATION.md
 **/DEMO_*.md
 **/EXECUTOR_*.md
 **/DEPLOYMENT.md
 **/ORGANIZATION_*.md
-**/CONFIG_SUPPORT_STATUS.md
-**/AIRFLOW_*.md
+**/CONFIG_*.md
+**/PREFECT_*.md
+**/POLYMARKET_*.md
+**/STREAMING_*.md
+**/REFACTORING_*.md
+**/UV_*.md
 TEST_RESULTS.md
 
 # Test files in root (should be in proper test directories)
