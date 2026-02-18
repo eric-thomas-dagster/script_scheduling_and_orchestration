@@ -102,7 +102,43 @@ example_scripts/
 - ⚠️ **Airflow UI Features** - Task instance clearing, manual runs with modified params
 - ⚠️ **Some Operators** - Highly Airflow-specific operators may need fallback mode
 
+### Smart Pattern Mapping
+
+The component intelligently maps Airflow patterns to better Dagster equivalents:
+
+**🎯 dag-factory → Partitioned Assets**
+
+Airflow's dag-factory pattern (creating multiple similar DAGs) becomes Dagster partitioned assets:
+
+```python
+# Airflow dag-factory: 3 separate DAGs
+customer_a_etl_dag
+customer_b_etl_dag
+customer_c_etl_dag
+
+# ↓ Becomes in Dagster ↓
+
+# Single partitioned asset
+@asset(partitions_def=CustomersPartitionsDefinition(["customer_a", "customer_b", "customer_c"]))
+def customer_etl(context):
+    customer_id = context.partition_key  # "customer_a", "customer_b", or "customer_c"
+    ...
+```
+
+**Benefits:**
+- One asset definition instead of N DAGs
+- Backfill all customers at once
+- Better performance and observability
+- Native Dagster partitioning features
+
+**Other Smart Mappings:**
+- **Airflow Datasets → Dagster Assets** - Asset-based scheduling with lineage
+- **Task outlets → Asset materialization** - Produces tracked data assets
+- **SQL checks → Asset checks** - Native data quality validation
+- **XCom → Op outputs** - Type-safe data passing between ops
+
 ### Airflow Examples
+- `customer_etl_factory.py` - dag-factory pattern → partitioned assets
 - `dag_with_xcom.py` - XCom data passing
 - `dag_with_datasets_*.py` - Dataset producer/consumer pattern
 - `dag_with_branching.py` - Conditional task execution
