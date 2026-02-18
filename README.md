@@ -1,14 +1,18 @@
 # Script Orchestrator
 
-A Dagster component that orchestrates existing Python scripts, Airflow DAGs, and Prefect flows with YAML-based configuration - **no code changes required**.
+A Dagster component that orchestrates existing Python scripts, Airflow DAGs, and Prefect flows - **no code changes required**.
 
 ## Perfect for Airflow & Prefect Users
 
-This project demonstrates how teams can run their existing orchestration code in Dagster without rewriting:
-- ✅ **Airflow DAGs** run as-is with full feature support
-- ✅ **Prefect flows** run as-is with configuration mapping
-- ✅ **Python scripts** work with simple YAML configuration
-- ✅ **Distributed compute** for Spark, Dask, and Ray jobs
+This project demonstrates a practical approach to running existing orchestration code in Dagster:
+
+- 🔍 **Parse & Extract** - Automatically reads schedules, parameters, and configuration from Airflow/Prefect
+- 📊 **Capture Metadata** - Logs, execution time, and metadata automatically captured
+- 🎯 **Map to Dagster Primitives** - Tasks become ops where possible for native Dagster execution
+- 🔄 **Intelligent Fallback** - When gaps exist, falls back to in-process execution (subprocess)
+- ⚠️ **Known Limitations** - Some features unsupported (e.g., Airflow HITL, interactive features)
+
+This approach supports most Airflow and Prefect workflows while providing a migration path to native Dagster patterns.
 
 ## Quick Start
 
@@ -39,14 +43,34 @@ example_scripts/
 
 ## Airflow Support
 
-### Core Features
-- ✅ **Standard Airflow DAGs** - Run existing DAGs without modification
-- ✅ **dag-factory YAML** - Full support for dag-factory pattern
-- ✅ **XCom** - Data passing between tasks
-- ✅ **Datasets** - Producer/consumer patterns map to Dagster assets
+### What's Supported
+
+**Automatically Parsed & Mapped to Dagster:**
+- ✅ **Schedules** - Cron schedules automatically extracted from DAG definitions
+- ✅ **Parameters** - DAG params and task arguments captured
 - ✅ **Task Dependencies** - Complex task graphs with branching
-- ✅ **Parameters** - Runtime configuration via params
-- ✅ **Asset Checks** - Map Airflow checks to Dagster asset checks
+- ✅ **Datasets** - Producer/consumer patterns map to Dagster assets
+- ✅ **XCom** - Data passing mapped to op outputs/inputs where possible
+- ✅ **Asset Checks** - SQL checks map to Dagster asset checks
+- ✅ **dag-factory YAML** - YAML-based DAG definitions parsed and converted
+- ✅ **Metadata & Logs** - Execution logs and timing automatically captured
+
+**Execution Strategy:**
+1. **Native Dagster Mapping** (preferred):
+   - Tasks with outlets → Dagster assets
+   - Tasks without outlets → Dagster ops in jobs
+   - DAG dependencies → Asset dependencies
+   - Leverages Dagster's execution engine
+
+2. **In-Process Fallback** (when needed):
+   - Falls back to subprocess execution for unsupported features
+   - Still captures logs, metadata, and schedules
+   - Provides compatibility with most Airflow features
+
+**Known Limitations:**
+- ⚠️ **Human-in-the-Loop (HITL)** - Interactive tasks not supported
+- ⚠️ **Airflow UI Features** - Task instance clearing, manual runs with modified params
+- ⚠️ **Some Operators** - Highly Airflow-specific operators may need fallback mode
 
 ### Airflow Examples
 - `dag_with_xcom.py` - XCom data passing
@@ -58,22 +82,37 @@ example_scripts/
 - `multi_task_job_example.yaml` - dag-factory multi-DAG jobs
 - `quality_checks_example.yaml` - dag-factory with checks
 
-### How It Works
-Airflow DAGs are automatically detected and converted to Dagster assets/jobs:
-- **Tasks with outlets** → Dagster assets
-- **Tasks without outlets** → Dagster ops in jobs
-- **DAG dependencies** → Asset dependencies
-- **Datasets** → Asset keys for lineage
-
 ## Prefect Support
 
-### Core Features
-- ✅ **Prefect Flows** - Run existing flows without modification
-- ✅ **Job Mode** - Map flows to Dagster jobs (not assets)
-- ✅ **Task Runners** - Local concurrency and task execution
-- ✅ **Retries** - Configurable retry policies with delays
-- ✅ **Flow Parameters** - Runtime configuration
-- ✅ **Subflows** - Nested flow support
+### What's Supported
+
+**Automatically Parsed & Mapped to Dagster:**
+- ✅ **Flow Detection** - Automatically discovers Prefect flows
+- ✅ **Parameters** - Flow parameters and task arguments captured
+- ✅ **Task Dependencies** - Flow task graphs parsed and converted
+- ✅ **Retry Policies** - Retry configuration mapped where possible
+- ✅ **Metadata & Logs** - Execution logs and timing automatically captured
+- ✅ **Configuration** - Flow and task configuration extracted
+
+**Execution Strategy:**
+1. **Native Dagster Mapping** (when possible):
+   - Flow → Dagster asset (default) or job
+   - Tasks → Dagster ops
+   - Leverages Dagster's execution engine
+
+2. **In-Process Fallback** (when needed):
+   - Falls back to subprocess execution for complex features
+   - Still captures logs, metadata, and configuration
+   - Provides compatibility with most Prefect features
+
+**Execution Modes:**
+- **`graph_asset`** (default): Maps flow to Dagster asset with ops for each task
+- **`job`**: Maps flow to Dagster job for operational tasks
+
+**Known Limitations:**
+- ⚠️ **Task Runners** - Complex concurrency/distributed runners may use fallback
+- ⚠️ **Prefect Cloud Features** - Automations, webhooks, notifications
+- ⚠️ **Some Decorators** - Advanced Prefect-specific decorators may need fallback mode
 
 ### Prefect Examples
 - `01_hello_world.py` - Simple flow
@@ -84,15 +123,16 @@ Airflow DAGs are automatically detected and converted to Dagster assets/jobs:
 - `local_concurrency_with_task_runner.py` - Task runner config
 - `simple_map_example.py` - Mapped tasks
 
-### Job Mode
+### Job Mode Configuration
 Prefect flows can be configured to run as Dagster jobs instead of assets:
 
 ```yaml
 # 03_run_api_sourced_etl.yaml
-mode: job  # Creates a Dagster job, not an asset
+prefect_mapping:
+  mode: job  # Creates a Dagster job, not an asset
 ```
 
-This is useful for operational tasks that don't produce data assets.
+Use **job mode** for operational tasks (notifications, cleanup) that don't produce data assets.
 
 ## Python Scripts
 
@@ -481,15 +521,22 @@ The component uses Dagster's `StateBackedComponent` pattern:
 
 **Key talking points:**
 
-1. **No code changes** - Show Airflow DAG/Prefect flow has no Dagster imports
-2. **Run as-is** - Existing orchestration code works unchanged
-3. **YAML for Python scripts** - Simple config for plain scripts
-4. **Automatic discovery** - Add new script+YAML, reload, it appears
-5. **Visual lineage** - Show dependency graph for cross-tool workflows
-6. **Airflow features** - XCom, datasets, dag-factory all work
-7. **Prefect features** - Job mode, retries, task runners all work
-8. **Migration path** - Start simple, gradually adopt Dagster features
-9. **Unified observability** - One UI for Airflow, Prefect, Python scripts
+1. **No code changes required** - Show Airflow DAG/Prefect flow has no Dagster imports
+2. **Automatic parsing** - Schedules, parameters, and config automatically extracted
+3. **Smart execution** - Maps to Dagster primitives where possible, falls back when needed
+4. **Logs & metadata** - Execution logs, timing, and metadata automatically captured
+5. **Visual lineage** - Show dependency graph for cross-tool workflows (Airflow + Prefect + Python)
+6. **YAML for Python scripts** - Simple config for plain scripts
+7. **Practical migration path** - Run existing code while gradually adopting Dagster patterns
+8. **Unified observability** - One UI for Airflow, Prefect, and Python scripts
+9. **Honest about gaps** - Clear about what's native vs fallback, known limitations
+
+**Demo flow:**
+- Show an Airflow DAG with datasets → mapped to Dagster assets
+- Show a Prefect flow with tasks → mapped to Dagster ops
+- Show cross-tool dependencies (Prefect depends on Airflow asset)
+- Show logs/metadata captured from both
+- Discuss: where we map natively, where we use fallback, and the migration path
 
 ## Project Structure
 
