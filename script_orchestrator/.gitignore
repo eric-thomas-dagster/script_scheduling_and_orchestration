@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Dagster
+.dagster_home/
+.tmp_dagster_home_*/
+storage/
+logs/
+.logs_queue/
+.telemetry/
+.nux/
+dagster_home/
+
+# State files (regenerated)
+**/scripts_state.json
+
+# Documentation (session notes, not needed in git)
+**/SESSION_*.md
+**/TESTING.md
+**/IMPLEMENTATION_*.md
+**/ENHANCEMENT_*.md
+**/RESOURCE_DETECTION*.md
+**/AIRFLOW_CHECK_OPERATORS.md
+**/STANDARD_DAG_SUPPORT.md
+**/XCOM_IMPLEMENTATION.md
+**/DEMO_*.md
+**/EXECUTOR_*.md
+**/DEPLOYMENT.md
+**/ORGANIZATION_*.md
+**/CONFIG_SUPPORT_STATUS.md
+**/AIRFLOW_*.md
+TEST_RESULTS.md
+
+# Test files in root (should be in proper test directories)
+/test_*.py
+/test_*.sh
+
+# Data files
+*.csv
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env.local
+.env.*.local
