@@ -173,6 +173,278 @@ PREFECT_ENABLED=true
 # GITHUB_TOKEN=your_token
 ```
 
+## YAML Configuration Reference
+
+### Component Configuration (defs.yaml)
+
+The `script_orchestrator/script_orchestrator/defs/scripts/defs.yaml` file configures the component:
+
+```yaml
+type: script_orchestrator.components.ScriptGithubComponent
+attributes:
+  # Source Configuration
+  use_local: true                    # Use local scripts (true) or clone from GitHub (false)
+  scripts_directory: example_scripts # Directory containing scripts (relative to project root)
+  repo_url: null                     # GitHub repo URL (required if use_local=false)
+  repo_branch: main                  # Git branch to use
+  github_token: null                 # GitHub token for private repos (or use env var)
+
+  # Airflow Configuration
+  airflow_enabled: true              # Enable Airflow DAG discovery
+  airflow_version: '3.1'            # Target Airflow version (e.g., '2.9', '3.1')
+  airflow_auto_install: true        # Auto-install Airflow if not present/mismatched
+
+  # Prefect Configuration
+  prefect_enabled: true              # Enable Prefect flow discovery
+  prefect_version: null              # Target Prefect version (e.g., '3.0')
+  prefect_auto_install: true        # Auto-install Prefect if not present/mismatched
+```
+
+**Component Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `use_local` | bool | `false` | Use local scripts instead of cloning from GitHub |
+| `scripts_directory` | str | `"scripts"` | Directory containing script files |
+| `repo_url` | str | `null` | GitHub repository URL (required if `use_local=false`) |
+| `repo_branch` | str | `"main"` | Git branch to clone/pull |
+| `github_token` | str | `null` | GitHub personal access token for private repos |
+| `airflow_enabled` | bool | `true` | Enable Airflow DAG discovery and execution |
+| `airflow_version` | str | `null` | Target Airflow version (auto-installs if specified) |
+| `airflow_auto_install` | bool | `true` | Automatically install target Airflow version |
+| `prefect_enabled` | bool | `true` | Enable Prefect flow discovery and execution |
+| `prefect_version` | str | `null` | Target Prefect version (auto-installs if specified) |
+| `prefect_auto_install` | bool | `true` | Automatically install target Prefect version |
+
+### Script Companion YAML Files
+
+Each script can have a companion `.yaml` file with the same name. The available options depend on the script type.
+
+#### Python Scripts
+
+```yaml
+# example.yaml (for example.py)
+enabled: true
+description: "Extracts data from API"
+group: data_pipeline
+owners:
+  - "team:data_engineering"
+  - "person:alice@example.com"
+tags:
+  category: "etl"
+  priority: "high"
+kinds:
+  - python
+  - api
+script_type: python
+
+# Scheduling
+schedule:
+  cron_schedule: "0 2 * * *"  # Cron expression
+  timezone: "UTC"             # Timezone for schedule
+
+# Dependencies
+depends_on:
+  - other_script_name         # Other scripts this depends on
+
+# Partitioning
+partitions:
+  type: daily                 # daily, hourly, weekly, monthly
+  start_date: "2024-01-01"   # Start date for partitions
+  end_date: null             # End date (null = ongoing)
+
+# Retry Policy
+retry_policy:
+  max_retries: 3
+  delay: 60                   # Seconds between retries
+  backoff: exponential        # exponential or linear
+
+# Execution
+timeout: 3600                 # Timeout in seconds
+```
+
+**Python YAML Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `enabled` | bool | No | Enable/disable this script (default: `true`) |
+| `description` | str | No | Human-readable description |
+| `group` | str | No | Asset group name for organization |
+| `owners` | list[str] | No | Owner emails or team tags |
+| `tags` | dict | No | Key-value tags for filtering |
+| `kinds` | list[str] | No | Asset kinds for compute/storage type |
+| `script_type` | str | No | Must be `"python"` |
+| `schedule` | dict | No | Cron schedule configuration |
+| `depends_on` | list[str] | No | List of asset keys this depends on |
+| `partitions` | dict | No | Time-based partitioning config |
+| `retry_policy` | dict | No | Retry behavior configuration |
+| `timeout` | int | No | Execution timeout in seconds |
+
+#### Airflow DAGs
+
+For standard Airflow DAGs (Python files):
+
+```yaml
+# dag_example.yaml (for dag_example.py)
+enabled: true
+description: "Airflow DAG with branching logic"
+group: airflow_examples
+owners:
+  - "team:data_engineering"
+tags:
+  category: "airflow"
+  complexity: "intermediate"
+kinds:
+  - python
+  - airflow
+script_type: airflow
+
+airflow_mapping:
+  enabled: true
+  dag_id: "my_dag_id"         # Optional: override DAG ID
+```
+
+For dag-factory YAML files:
+
+```yaml
+# dag_factory_example.yaml
+default:
+  start_date: 2025-09-01      # Global default for all DAGs
+
+my_dag:
+  schedule: "@daily"
+  description: "My DAG description"
+  tags: ["production", "etl"]
+
+  tasks:
+    task_name:
+      decorator: airflow.sdk.task
+      python_callable: module.function_name
+      outlets:                # Produces an asset
+        - __type__: airflow.sdk.Asset
+          name: "asset_name"
+      dependencies: [other_task]  # Task dependencies
+
+    # XCom example
+    process_task:
+      decorator: airflow.sdk.task
+      python_callable: module.process
+      data: +extract_task     # Get output from extract_task via XCom
+```
+
+**Airflow YAML Parameters (Python DAGs):**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `enabled` | bool | No | Enable/disable this DAG |
+| `script_type` | str | Yes | Must be `"airflow"` |
+| `airflow_mapping.enabled` | bool | No | Enable Airflow mapping (default: `true`) |
+| `airflow_mapping.dag_id` | str | No | Override DAG ID from Python file |
+
+**dag-factory YAML Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `default.start_date` | date | No | Default start date for all DAGs |
+| `<dag_id>.schedule` | str | No | Cron or preset (`@daily`, `@hourly`) |
+| `<dag_id>.description` | str | No | DAG description |
+| `<dag_id>.tags` | list[str] | No | DAG tags |
+| `<dag_id>.tasks.<task_id>.decorator` | str | Yes | Task decorator (e.g., `airflow.sdk.task`) |
+| `<dag_id>.tasks.<task_id>.python_callable` | str | Yes | Python function path |
+| `<dag_id>.tasks.<task_id>.outlets` | list[dict] | No | Assets produced by task |
+| `<dag_id>.tasks.<task_id>.dependencies` | list[str] | No | Upstream task IDs |
+| XCom params (e.g., `data: +task_id`) | str | No | Pull XCom from upstream task |
+
+#### Prefect Flows
+
+```yaml
+# flow_example.yaml (for flow_example.py)
+enabled: true
+script_type: prefect
+description: "Prefect flow with parallel tasks"
+group: prefect_examples
+owners:
+  - "team:data_engineering"
+tags:
+  pattern: "concurrent"
+  complexity: "intermediate"
+kinds:
+  - python
+  - prefect
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true     # Fallback to subprocess if mapping fails
+  mode: "graph_asset"         # "graph_asset" or "job"
+
+# Optional: Schedule configuration
+schedule:
+  cron_schedule: "0 3 * * *"
+  timezone: "UTC"
+```
+
+**Prefect YAML Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `enabled` | bool | No | Enable/disable this flow |
+| `script_type` | str | Yes | Must be `"prefect"` |
+| `prefect_mapping.enabled` | bool | No | Enable Prefect flow mapping (default: `true`) |
+| `prefect_mapping.fallback_on_error` | bool | No | Fallback to subprocess execution on errors |
+| `prefect_mapping.mode` | str | No | `"graph_asset"` (default) or `"job"` |
+| `schedule` | dict | No | Cron schedule (same as Python scripts) |
+
+**Prefect Modes:**
+
+- **`graph_asset`** (default): Creates a Dagster asset with ops for each task
+  - Use for flows that produce data
+  - Appears in asset graph
+  - Supports asset dependencies
+
+- **`job`**: Creates a Dagster job (not an asset)
+  - Use for operational tasks (notifications, cleanup, etc.)
+  - Does not appear in asset graph
+  - Executed on-demand or via schedules/sensors
+
+### Common Patterns
+
+#### 1. Asset Dependencies
+```yaml
+# downstream.yaml
+depends_on:
+  - upstream_asset_name       # This asset depends on upstream_asset_name
+  - another_asset
+```
+
+#### 2. Schedules
+```yaml
+schedule:
+  cron_schedule: "0 2 * * *"  # Daily at 2 AM
+  timezone: "America/New_York"
+```
+
+Common cron patterns:
+- `"0 * * * *"` - Every hour
+- `"0 2 * * *"` - Daily at 2 AM
+- `"0 2 * * MON"` - Weekly on Monday at 2 AM
+- `"0 0 1 * *"` - Monthly on the 1st
+
+#### 3. Partitions
+```yaml
+partitions:
+  type: daily                 # daily, hourly, weekly, monthly
+  start_date: "2024-01-01"
+  end_date: null              # null = ongoing
+```
+
+#### 4. Retry Policies
+```yaml
+retry_policy:
+  max_retries: 3
+  delay: 60                   # Initial delay in seconds
+  backoff: exponential        # exponential or linear
+```
+
 ## Features
 
 ### Core Capabilities
