@@ -1292,7 +1292,8 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 logger.info(f"Creating assets from dag-factory YAML: {script_info.name}")
                 return self._build_dag_factory_yaml_assets(script_info, all_scripts, repo_path)
             except Exception as e:
-                logger.debug(f"Failed to create assets from dag-factory YAML {script_info.name}: {e} (will use fallback mode)")
+                logger.error(f"Failed to create assets from dag-factory YAML {script_info.name}: {e}")
+                logger.exception("Full traceback:")
                 logger.info(f"Skipping dag-factory YAML")
                 return None
 
@@ -1357,6 +1358,14 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             try:
                 tasks, dags = self._parse_airflow_dag(script_info.script_path)
                 if dags:
+                    # Check if file has multiple DAGs with assets - handle them separately for proper lineage
+                    dags_with_assets = [d for d in dags if d.get('inlet_datasets') or d.get('outlet_datasets')]
+
+                    if len(dags_with_assets) > 1:
+                        logger.info(f"File {script_info.name} has {len(dags_with_assets)} DAGs with assets - creating separate definitions for lineage")
+                        return self._build_multi_dag_file_assets(script_info, dags_with_assets, all_scripts, repo_path)
+
+                    # Single DAG or no asset DAGs - use original logic
                     dag_info = dags[0]
 
                     # Check Airflow version compatibility
@@ -1423,6 +1432,143 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
     # ===== Asset Building Methods =====
 
+    def _build_multi_dag_file_assets(
+        self, script_info: ScriptInfo, dags_with_assets: List[Dict], all_scripts: List[ScriptInfo], repo_path: str
+    ):
+        """Build separate Dagster assets for each DAG in a Python file with multiple DAGs.
+
+        This ensures proper lineage between producer and consumer DAGs in the same file.
+        """
+        from dagster import AssetKey
+
+        all_definitions = []
+
+        # Convert Airflow dataset URIs to Dagster asset keys
+        def dataset_uri_to_asset_key(uri: str) -> str:
+            """Convert an Airflow Dataset URI to a Dagster asset key."""
+            import re
+            cleaned = re.sub(r'^[a-z]+://', '', uri)
+            cleaned = re.sub(r'[^A-Za-z0-9_]', '_', cleaned)
+            cleaned = re.sub(r'_+', '_', cleaned).strip('_')
+            return f"airflow_dataset_{cleaned}"
+
+        logger.info(f"Creating {len(dags_with_assets)} separate definitions for DAGs with assets")
+
+        for dag_info in dags_with_assets:
+            dag_id = dag_info.get('dag_id', dag_info['name'])
+            inlet_datasets = dag_info.get('inlet_datasets', [])
+            outlet_datasets = dag_info.get('outlet_datasets', [])
+
+            logger.info(f"  DAG {dag_id}: {len(inlet_datasets)} inlets, {len(outlet_datasets)} outlets")
+
+            # Create individual asset for each outlet produced by this DAG
+            for outlet_uri in outlet_datasets:
+                outlet_asset_key = dataset_uri_to_asset_key(outlet_uri)
+
+                # Find dependencies from inlet datasets
+                deps = []
+                for inlet_uri in inlet_datasets:
+                    inlet_asset_key = dataset_uri_to_asset_key(inlet_uri)
+                    deps.append(AssetKey(inlet_asset_key))
+
+                # Create the asset definition
+                asset_def = self._create_single_dag_asset(
+                    dag_id=dag_id,
+                    asset_key=outlet_asset_key,
+                    outlet_uri=outlet_uri,
+                    deps=deps,
+                    script_info=script_info,
+                    dag_info=dag_info,
+                    repo_path=repo_path
+                )
+
+                if asset_def:
+                    all_definitions.append(asset_def)
+                    logger.info(f"    Created asset: {outlet_asset_key} (from DAG {dag_id})")
+
+        logger.info(f"✅ Created {len(all_definitions)} assets from {len(dags_with_assets)} DAGs in {script_info.name}")
+        return all_definitions
+
+    def _create_single_dag_asset(
+        self, dag_id: str, asset_key: str, outlet_uri: str, deps: List,
+        script_info: ScriptInfo, dag_info: Dict, repo_path: str
+    ):
+        """Create a single Dagster asset for one DAG's outlet."""
+        from dagster import asset, AssetExecutionContext, AssetKey
+        import subprocess
+        from pathlib import Path
+
+        metadata = script_info.metadata or ScriptMetadata()
+
+        # Build asset tags
+        asset_tags = {
+            **metadata.tags,
+            "script_type": "airflow",
+            "dag_id": dag_id,
+            "outlet_uri": outlet_uri,
+        }
+
+        # Create the asset function
+        def make_asset_func(dag_id_param, script_path_param, repo_path_param):
+            """Closure to capture parameters"""
+            def asset_func(context: AssetExecutionContext):
+                """Execute Airflow DAG to produce this asset."""
+                context.log.info(f"Running Airflow DAG: {dag_id_param}")
+                context.log.info(f"Producing asset: {outlet_uri}")
+
+                try:
+                    from datetime import datetime
+                    start_time = datetime.now()
+                    execution_date = start_time.strftime('%Y-%m-%d')
+
+                    # Use uv run to execute airflow
+                    airflow_cmd = self._build_airflow_command("dags", "test", dag_id_param, execution_date)
+
+                    # Set environment
+                    env = os.environ.copy()
+                    env["AIRFLOW_HOME"] = str(Path(repo_path_param) / ".airflow")
+                    env["AIRFLOW__CORE__DAGS_FOLDER"] = str(script_path_param.parent)
+                    env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
+
+                    context.log.info(f"Executing: {' '.join(airflow_cmd)}")
+
+                    result = subprocess.run(
+                        airflow_cmd,
+                        capture_output=True,
+                        text=True,
+                        cwd=repo_path_param,
+                        env=env,
+                        timeout=300
+                    )
+
+                    if result.returncode == 0:
+                        context.log.info("✅ DAG execution successful")
+                        return {"status": "success", "dag_id": dag_id_param}
+                    else:
+                        context.log.error(f"DAG execution failed: {result.stderr}")
+                        raise Exception(f"Airflow DAG {dag_id_param} failed")
+
+                except Exception as e:
+                    context.log.error(f"Error executing DAG: {e}")
+                    raise
+
+            return asset_func
+
+        # Create the decorated asset
+        asset_func = make_asset_func(dag_id, script_info.script_path, repo_path)
+
+        asset_kwargs = {
+            "name": asset_key,
+            "tags": asset_tags,
+            "description": f"Asset produced by Airflow DAG {dag_id}: {outlet_uri}",
+            "group_name": metadata.group_name or "airflow",
+        }
+
+        if deps:
+            asset_kwargs["deps"] = deps
+
+        return asset(**asset_kwargs)(asset_func)
+
     def _build_airflow_asset_with_datasets(
         self, script_info: ScriptInfo, all_scripts: List[ScriptInfo], repo_path: str, dag_info: Dict
     ):
@@ -1444,6 +1590,12 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         dag_airflow_version = dag_info.get('dag_airflow_version', '3.x')
 
         logger.info(f"Building Airflow multi-asset {dag_id} with {len(inlet_datasets)} inlets, {len(outlet_datasets)} outlets")
+
+        # If this DAG has inlet dependencies (consumes datasets from other DAGs),
+        # use individual asset approach for proper cross-DAG lineage
+        if inlet_datasets and outlet_datasets:
+            logger.info(f"DAG {dag_id} has inlet dependencies - using individual asset approach for lineage")
+            return self._build_multi_dag_file_assets(script_info, [dag_info], all_scripts, repo_path)
 
         # Log version compatibility warning if present
         if version_warning:
@@ -1922,13 +2074,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         if config_class:
             airflow_multi_asset_fn.__annotations__['config'] = config_class
 
-        # Note: We don't use 'ins' parameter because the function doesn't take explicit inputs.
-        # Dagster will infer dependencies from the asset graph based on which assets exist.
-        # The asset_deps_map tracks logical dependencies but we don't need to pass them as ins.
-
         # Create the multi-asset using outs with dagster_type=Nothing
         # This tells Dagster not to try to persist outputs - we only yield MaterializeResult metadata
         # can_subset=True allows individual assets to be materialized independently
+        # Note: DAGs with inlet dependencies use _create_single_dag_asset instead
         multi_asset_kwargs = {
             "name": f"airflow_{dag_id}",
             "outs": asset_outs,
@@ -2170,6 +2319,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         """
         dag_id = dag_info['dag_id']
         yaml_path = script_info.script_path
+        yaml_filename = yaml_path.name  # Extract just the filename (e.g., "asset_chain_example.yaml")
 
         # Get tasks that produce outlets (these become assets)
         asset_tasks = []
@@ -2224,6 +2374,14 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             upstream_tasks = task.get('dependencies', [])
             deps = []
 
+            # First, add DAG-level asset dependencies (cross-DAG dependencies)
+            # These come from the 'schedule' field when it references assets
+            asset_schedule = dag_info.get('asset_schedule') or []
+            for scheduled_asset_name in asset_schedule:
+                deps.append(AssetKey(scheduled_asset_name))
+                logger.debug(f"Added cross-DAG dependency: {asset_name} depends on {scheduled_asset_name}")
+
+            # Then, add task-level dependencies (within-DAG dependencies)
             # Map upstream task IDs to asset keys
             for upstream_task_id in upstream_tasks:
                 # Find if upstream task produces an outlet
@@ -2232,6 +2390,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     # Upstream is also an asset
                     upstream_outlet = upstream_task['outlets'][0]['name']
                     deps.append(AssetKey(upstream_outlet))
+                    logger.debug(f"Added within-DAG dependency: {asset_name} depends on {upstream_outlet}")
 
             # Build asset tags
             asset_tags = {
@@ -2239,6 +2398,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 "dag_id": dag_id,
                 "task_id": task_id,
                 "source": "dag_factory_yaml",
+                "dag_factory_file": yaml_filename,
             }
             for kind in metadata.kinds:
                 asset_tags[f"dagster/kind/{kind}"] = ""
@@ -2301,7 +2461,11 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 return asset_func
 
             # Build metadata with detected resources
-            asset_metadata = {}
+            asset_metadata = {
+                "dag_factory_file": yaml_filename,
+                "dag_id": dag_id,
+                "task_id": task_id,
+            }
             if unique_resources:
                 resource_info = {
                     name: {'type': res['resource_type'], 'import': res['import_name']}
@@ -2313,12 +2477,19 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 }
 
             # Create asset kwargs
+            # Build comprehensive description
+            task_desc = task.get('description', '')
+            if task_desc:
+                description = f"{task_desc}\n\nFrom dag-factory YAML: {yaml_filename}\nDAG: {dag_id} | Task: {task_id}"
+            else:
+                description = f"Asset from dag-factory YAML: {yaml_filename}\nDAG: {dag_id} | Task: {task_id}"
+
             asset_kwargs = {
                 "name": asset_name,
                 "compute_kind": compute_kind,
                 "group_name": metadata.group_name or "dag_factory",
                 "tags": asset_tags,
-                "description": task.get('description') or f"Asset from DAG {dag_id}, task {task_id}",
+                "description": description,
             }
 
             if asset_metadata:
@@ -2343,13 +2514,21 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         # Create asset selection for all created assets
         asset_keys = [AssetKey(a.key.path[0]) for a in created_assets]
 
+        # Build comprehensive job description
+        dag_desc = dag_info.get('description', '')
+        if dag_desc:
+            job_description = f"{dag_desc}\n\nFrom dag-factory YAML: {yaml_filename}\nDAG: {dag_id}"
+        else:
+            job_description = f"Asset job from dag-factory YAML: {yaml_filename}\nDAG: {dag_id}"
+
         asset_job = define_asset_job(
             name=job_name,
-            description=dag_info.get('description') or f"Asset job from DAG {dag_id}",
+            description=job_description,
             selection=asset_keys,
             tags={
                 "source": "dag_factory_yaml",
                 "dag_id": dag_id,
+                "dag_factory_file": yaml_filename,
             }
         )
 
@@ -2372,6 +2551,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         """
         dag_id = dag_info['dag_id']
         yaml_path = script_info.script_path
+        yaml_filename = yaml_path.name  # Extract just the filename
 
         # Get asset schedule (which asset triggers this DAG)
         asset_schedule = dag_info.get('asset_schedule', [])
@@ -2569,7 +2749,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                             # No XCom dependencies - call normally
                             results[task_id] = op()
 
-                return results
+                # Don't return results for terminal operation jobs (no outputs needed)
             return job_func
 
         # Create the job with XCom-aware function
@@ -2579,6 +2759,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         job_tags = {
             "source": "dag_factory_yaml",
             "dag_id": dag_id,
+            "dag_factory_file": yaml_filename,
             "dagster/kind/airflow": "",  # Airflow framework kind
         }
 
@@ -2588,9 +2769,16 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             job_tags[f"uses_{resource_name}"] = ""
             job_tags[f"resource_type_{resource['resource_type']}"] = ""
 
+        # Build comprehensive job description
+        dag_desc = dag_info.get('description', '')
+        if dag_desc:
+            job_description = f"{dag_desc}\n\nFrom dag-factory YAML: {yaml_filename}\nDAG: {dag_id}\nTriggered by asset: {trigger_asset_name}"
+        else:
+            job_description = f"Op job from dag-factory YAML: {yaml_filename}\nDAG: {dag_id}\nTriggered by asset: {trigger_asset_name}"
+
         op_job = job(
             name=job_name,
-            description=dag_info.get('description') or f"Op job from DAG {dag_id}",
+            description=job_description,
             tags=job_tags
         )(job_func)
 

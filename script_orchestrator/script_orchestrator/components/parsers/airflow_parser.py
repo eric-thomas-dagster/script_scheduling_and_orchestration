@@ -183,11 +183,15 @@ class AirflowParser(BaseParser):
                 if isinstance(node, ast.FunctionDef):
                     # Check for @task decorator (Airflow TaskFlow API)
                     if self.has_decorator(node, 'task'):
+                        # Extract task configuration including outlets
+                        task_config = self._extract_task_config(node)
+
                         task_info = {
                             'name': node.name,
                             'params': [arg.arg for arg in node.args.args],
                             'parameters': self.extract_function_parameters(node),
                             'returns_value': self.has_return_statement(node),
+                            'outlet_datasets': task_config.get('outlet_datasets', []),
                         }
                         tasks.append(task_info)
 
@@ -205,8 +209,27 @@ class AirflowParser(BaseParser):
                         if version_warning:
                             logger.warning(version_warning)
 
+                        # Extract tasks defined inside this DAG function (nested tasks)
+                        nested_tasks = []
+                        for inner_node in ast.walk(node):
+                            if isinstance(inner_node, ast.FunctionDef) and inner_node != node:
+                                if self.has_decorator(inner_node, 'task'):
+                                    task_config = self._extract_task_config(inner_node)
+                                    task_info = {
+                                        'name': inner_node.name,
+                                        'params': [arg.arg for arg in inner_node.args.args],
+                                        'parameters': self.extract_function_parameters(inner_node),
+                                        'returns_value': self.has_return_statement(inner_node),
+                                        'outlet_datasets': task_config.get('outlet_datasets', []),
+                                    }
+                                    nested_tasks.append(task_info)
+                                    logger.debug(f"Found nested task {inner_node.name} with {len(task_config.get('outlet_datasets', []))} outlet(s)")
+
+                        # Combine module-level tasks with nested tasks for this DAG
+                        all_tasks_for_dag = tasks + nested_tasks
+
                         # Extract task calls within the DAG function
-                        task_calls = self._extract_task_calls(node, tasks)
+                        task_calls = self._extract_task_calls(node, all_tasks_for_dag)
 
                         # Detect advanced Airflow features
                         advanced_features = self._detect_advanced_features(tree, node)
@@ -215,14 +238,32 @@ class AirflowParser(BaseParser):
                         inlet_datasets = dag_config.get('inlet_datasets', [])
                         outlet_datasets = dag_config.get('outlet_datasets', [])
 
+                        # Also collect outlets from individual tasks (both module-level and nested)
+                        for task in all_tasks_for_dag:
+                            task_outlets = task.get('outlet_datasets', [])
+                            if task_outlets:
+                                outlet_datasets.extend(task_outlets)
+
                         inlet_datasets = self._resolve_dataset_vars(inlet_datasets, dataset_definitions)
                         outlet_datasets = self._resolve_dataset_vars(outlet_datasets, dataset_definitions)
+
+                        # Store task information with the DAG
+                        dag_tasks_with_outlets = []
+                        for task in all_tasks_for_dag:
+                            task_outlets = task.get('outlet_datasets', [])
+                            if task_outlets:
+                                resolved_outlets = self._resolve_dataset_vars(task_outlets, dataset_definitions)
+                                dag_tasks_with_outlets.append({
+                                    'task_name': task['name'],
+                                    'outlet_datasets': resolved_outlets,
+                                })
 
                         dag_info = {
                             'name': node.name,
                             'dag_id': dag_config.get('dag_id', node.name),
                             'task_calls': task_calls,
                             'tasks': operator_tasks,  # Operator instantiations (for check operators, etc.)
+                            'dag_tasks': dag_tasks_with_outlets,  # Tasks with their outlets
                             'params': dag_config.get('params', {}),
                             'schedule': dag_config.get('schedule'),
                             'start_date': dag_config.get('start_date'),
@@ -231,7 +272,7 @@ class AirflowParser(BaseParser):
                             'tags': dag_config.get('tags', []),
                             'advanced_features': advanced_features,
                             'inlet_datasets': inlet_datasets,  # Datasets this DAG consumes
-                            'outlet_datasets': outlet_datasets,  # Datasets this DAG produces
+                            'outlet_datasets': outlet_datasets,  # Datasets this DAG produces (from DAG or tasks)
                             'version_warning': version_warning,  # Airflow version compatibility warning
                             'dag_airflow_version': dag_airflow_version,  # Detected Airflow version (e.g., "2.x", "3.x")
                         }
@@ -411,6 +452,24 @@ class AirflowParser(BaseParser):
                             pass
                 return total_seconds if total_seconds > 0 else None
         return None
+
+    def _extract_task_config(self, task_node: ast.FunctionDef) -> dict:
+        """Extract configuration from @task decorator including outlets."""
+        task_config = {}
+
+        for decorator in task_node.decorator_list:
+            if isinstance(decorator, ast.Call):
+                if isinstance(decorator.func, ast.Name) and decorator.func.id == 'task':
+                    for keyword in decorator.keywords:
+                        if keyword.arg == 'outlets':
+                            # Extract outlet datasets/assets (produced by this task)
+                            if isinstance(keyword.value, ast.List):
+                                datasets = self._extract_dataset_references(keyword.value)
+                                if datasets:
+                                    task_config['outlet_datasets'] = datasets
+                                    logger.debug(f"Task {task_node.name} has {len(datasets)} outlet(s)")
+
+        return task_config
 
     def _extract_dataset_references(self, list_node: ast.List) -> List[str]:
         """Extract Dataset or Asset URI references from a list.
@@ -612,9 +671,13 @@ class AirflowParser(BaseParser):
             return None
 
         # Check for advanced Airflow features that require subprocess execution
+        # EXCEPT for uses_assets - we handle those specially
         advanced_features = dag_info.get('advanced_features', {})
-        if any(advanced_features.values()):
-            enabled_features = [k for k, v in advanced_features.items() if v]
+        blocking_features = {k: v for k, v in advanced_features.items()
+                           if v and k not in ['uses_assets', 'uses_datasets']}
+
+        if any(blocking_features.values()):
+            enabled_features = [k for k, v in blocking_features.items() if v]
             logger.info(f"DAG {dag_name} uses advanced features {enabled_features}, falling back to subprocess")
             return None
 

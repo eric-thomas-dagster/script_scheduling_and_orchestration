@@ -9,7 +9,73 @@ A Dagster component for orchestrating and migrating existing Airflow and Prefect
 - **Automatic version detection**: Filters DAGs based on installed orchestrator version
 - **dag-factory support**: Load Airflow DAGs defined in YAML
 - **Asset materialization**: Execute workflows and track data assets in Dagster
-- **Dataset/Inlet/Outlet support**: Map Airflow datasets to Dagster assets
+- **Dataset/Inlet/Outlet support**: Map Airflow datasets to Dagster assets with full lineage tracking
+
+## Asset Lineage
+
+The component automatically extracts and visualizes data lineage from Airflow DAGs using Assets (Airflow 3.x) or Datasets (Airflow 2.x).
+
+### Cross-DAG Lineage
+
+When DAGs produce and consume datasets, the component creates individual Dagster assets with proper dependencies:
+
+```python
+from airflow.sdk import Asset, dag, task
+
+# Producer DAG
+raw_data = Asset("raw_data")
+
+@dag(schedule="@hourly")
+def extract_data():
+    @task(outlets=[raw_data])
+    def fetch():
+        ...
+
+# Consumer DAG
+processed_data = Asset("processed_data")
+
+@dag(schedule=[raw_data])  # Triggered when raw_data updates
+def process_data():
+    @task(outlets=[processed_data])
+    def transform():
+        ...
+```
+
+In Dagster, this creates:
+- `airflow_dataset_raw_data` (from extract_data)
+- `airflow_dataset_processed_data` (from process_data, depends on raw_data)
+
+### Multi-Input Assets
+
+DAGs can depend on multiple upstream datasets:
+
+```python
+customer_data = Asset("customer_data")
+sales_data = Asset("sales_data")
+report = Asset("combined_report")
+
+@dag(schedule=[customer_data, sales_data])  # Wait for BOTH
+def generate_report():
+    @task(outlets=[report])
+    def combine():
+        ...
+```
+
+The resulting `airflow_dataset_combined_report` asset will show dependencies on both upstream assets in the lineage graph.
+
+### Configuration
+
+To enable asset lineage for Python DAGs, create a companion YAML file:
+
+```yaml
+# my_dag.yaml
+enabled: true
+script_type: airflow
+group_name: airflow  # Optional: organize in asset groups
+airflow_mapping:
+  enabled: true
+  mode: graph_asset
+```
 
 ## Quick Start
 

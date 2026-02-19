@@ -1,0 +1,11 @@
+enabled: true
+script_type: airflow
+description: "Multi-input DAG: generates combined report from customer and sales data"
+group_name: airflow
+kinds:
+  - airflow
+  - reporting
+  - multi-input
+airflow_mapping:
+  enabled: true
+  mode: graph_asset
