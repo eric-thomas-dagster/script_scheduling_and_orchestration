@@ -402,6 +402,17 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             return
 
         try:
+            # Set up environment with AIRFLOW_HOME
+            env = os.environ.copy()
+            # Use repo directory for Airflow home to isolate from system Airflow
+            airflow_home = Path(self.repo_path) / ".airflow"
+            airflow_home.mkdir(exist_ok=True)
+            env["AIRFLOW_HOME"] = str(airflow_home)
+            env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
+            env["AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS"] = "False"
+
+            logger.info(f"Checking Airflow database at AIRFLOW_HOME={airflow_home}")
+
             # Check if Airflow DB is initialized
             # Use uv run to execute airflow with the correct virtual environment
             check_result = subprocess.run(
@@ -409,31 +420,37 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 capture_output=True,
                 text=True,
                 timeout=10,
-                check=False
+                check=False,
+                env=env
             )
 
             if check_result.returncode != 0:
                 # DB not initialized - run migration  (this can take 30-60 seconds)
+                logger.info("Airflow database not initialized - running migration (this may take 30-60 seconds)...")
                 migrate_result = subprocess.run(
                     self._build_airflow_command("db", "migrate"),
                     capture_output=True,
                     text=True,
                     timeout=120,
-                    check=False
+                    check=False,
+                    env=env
                 )
 
                 if migrate_result.returncode == 0:
                     # Successfully initialized
+                    logger.info("✅ Airflow database initialized successfully")
                     ScriptGithubComponent._airflow_db_checked = True
                 else:
-                    # Log warning but don't fail - DAG execution will fail if DB is truly unavailable
-                    logger.warning(
-                        "Failed to initialize Airflow database. "
+                    # Log the actual error
+                    error_msg = migrate_result.stderr.strip() if migrate_result.stderr else migrate_result.stdout.strip()
+                    logger.error(
+                        f"Failed to initialize Airflow database:\n{error_msg}\n"
                         "Airflow DAGs may not execute properly. "
-                        "Run 'airflow db migrate' manually if needed."
+                        f"Try running manually: cd {self.repo_path} && AIRFLOW_HOME={airflow_home} uv run airflow db migrate"
                     )
             else:
                 # DB already initialized
+                logger.debug("Airflow database already initialized")
                 ScriptGithubComponent._airflow_db_checked = True
 
         except (FileNotFoundError, ModuleNotFoundError) as e:
@@ -1604,6 +1621,8 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
                     # Set config as environment variables
                     env = os.environ.copy()
+                    # Set AIRFLOW_HOME to match the initialized database location
+                    env["AIRFLOW_HOME"] = str(Path(repo_path) / ".airflow")
                     # Tell Airflow where to find DAG files - use the directory containing this specific DAG
                     dag_directory = str(script_info.script_path.parent)
                     env["AIRFLOW__CORE__DAGS_FOLDER"] = dag_directory
@@ -1754,6 +1773,8 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     # Tell Airflow where to find DAG files - use the directory containing this specific DAG
                     dag_directory = str(script_info.script_path.parent)
                     env = os.environ.copy()
+                    # Set AIRFLOW_HOME to match the initialized database location
+                    env["AIRFLOW_HOME"] = str(Path(repo_path) / ".airflow")
                     env["AIRFLOW__CORE__DAGS_FOLDER"] = dag_directory
                     # Don't load example DAGs
                     env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
@@ -2664,6 +2685,8 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
                 # Set environment including the partition key
                 env = os.environ.copy()
+                # Set AIRFLOW_HOME to match the initialized database location
+                env["AIRFLOW_HOME"] = str(Path(repo_path) / ".airflow")
                 dag_directory = str(script_info.script_path.parent)
                 env["AIRFLOW__CORE__DAGS_FOLDER"] = dag_directory
                 env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
