@@ -460,7 +460,16 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 ScriptGithubComponent._airflow_db_checked = True
 
         except (FileNotFoundError, ModuleNotFoundError) as e:
-            logger.info(f"⏭️  Airflow not available ({e.__class__.__name__}: {e}) - skipping DB initialization check")
+            # Check if this is the "airflow command not found" issue
+            if "airflow" in str(e) or "No such file" in str(e):
+                logger.warning(
+                    "⚠️  Airflow command not found. The 'airflow' console script may not be installed properly.\n"
+                    "   This can happen with uv. To fix, run:\n"
+                    "   uv pip install --reinstall apache-airflow\n"
+                    "   Then restart the server."
+                )
+            else:
+                logger.info(f"⏭️  Airflow not available ({e.__class__.__name__}: {e}) - skipping DB initialization check")
             ScriptGithubComponent._airflow_db_checked = True  # Don't check again
         except subprocess.TimeoutExpired:
             logger.warning("⏱️  Airflow DB check timed out - skipping initialization")
