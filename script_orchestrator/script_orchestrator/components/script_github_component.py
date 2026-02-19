@@ -1508,6 +1508,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             "outlet_uri": outlet_uri,
         }
 
+        # Add kinds as tags with dagster/kind/ prefix
+        for kind in metadata.kinds:
+            asset_tags[f"dagster/kind/{kind}"] = ""
+
         # Create the asset function
         def make_asset_func(dag_id_param, script_path_param, repo_path_param):
             """Closure to capture parameters"""
