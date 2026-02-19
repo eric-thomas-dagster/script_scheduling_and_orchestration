@@ -3,7 +3,7 @@ attributes:
   use_local: true
   scripts_directory: example_scripts
   airflow_enabled: true
-  airflow_version: '2.10'  # Set to 2.x to demo migrating existing 2.x DAGs (3.x flows will be skipped)
+  airflow_version: '3.1'  # Airflow 3.x coexists with Prefect 3.x (SQLAlchemy 2.0)
   airflow_auto_install: true
   prefect_enabled: true
   prefect_version: null
