@@ -1,7 +1,7 @@
 enabled: true
 script_type: airflow
 description: "Multi-input DAG: generates combined report from customer and sales data"
-group_name: airflow
+group_name: airflow_examples
 kinds:
   - airflow
   - reporting
