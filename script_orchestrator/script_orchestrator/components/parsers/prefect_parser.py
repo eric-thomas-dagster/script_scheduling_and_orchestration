@@ -503,7 +503,7 @@ class PrefectParser(BaseParser):
             return graph_asset_decorated
 
         except Exception as e:
-            logger.warning(f"Monkey patch approach failed for {flow_name}: {e}", exc_info=True)
+            logger.debug(f"Monkey patch approach failed for {flow_name}: {e} (falling back to subprocess mode)")
             return None
 
         finally:
@@ -738,7 +738,7 @@ class PrefectParser(BaseParser):
             return job_decorated
 
         except Exception as e:
-            logger.warning(f"Monkey patch job approach failed for {flow_name}: {e}", exc_info=True)
+            logger.debug(f"Monkey patch job approach failed for {flow_name}: {e} (falling back to subprocess mode)")
             return None
 
         finally:

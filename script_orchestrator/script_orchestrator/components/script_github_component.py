@@ -1258,7 +1258,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 logger.info(f"Creating assets from dag-factory YAML: {script_info.name}")
                 return self._build_dag_factory_yaml_assets(script_info, all_scripts, repo_path)
             except Exception as e:
-                logger.warning(f"Failed to create assets from dag-factory YAML {script_info.name}: {e}")
+                logger.debug(f"Failed to create assets from dag-factory YAML {script_info.name}: {e} (will use fallback mode)")
                 logger.info(f"Skipping dag-factory YAML")
                 return None
 
@@ -1973,7 +1973,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                         all_definitions.append(graph_asset_def)
 
                 except Exception as e:
-                    logger.warning(f"Failed to create graph asset for dag-factory DAG {dag_id}: {e}")
+                    logger.debug(f"Failed to create graph asset for dag-factory DAG {dag_id}: {e} (will use fallback mode)")
                     logger.info("Falling back to simple sequential asset")
                     # Continue to fallback below
 
@@ -2140,7 +2140,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 asset_tasks.append(task)
 
         if not asset_tasks:
-            logger.warning(f"DAG {dag_id} marked as having outlets but no tasks with outlets found")
+            logger.debug(f"DAG {dag_id} marked as having outlets but no tasks with outlets found")
             return None
 
         logger.info(f"Creating {len(asset_tasks)} assets from DAG {dag_id}")
