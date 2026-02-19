@@ -393,12 +393,16 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         database is initialized before any DAG executions. Uses sys.executable to
         invoke airflow as a module from the current Python environment.
         """
+        logger.info(f"🔍 Checking Airflow DB initialization (enabled={self.airflow_enabled}, checked={ScriptGithubComponent._airflow_db_checked})")
+
         # Skip if Airflow is disabled
         if not self.airflow_enabled:
+            logger.info("⏭️  Airflow is disabled - skipping DB initialization")
             return
 
         # Skip if already checked
         if ScriptGithubComponent._airflow_db_checked:
+            logger.info("⏭️  Airflow DB already checked - skipping")
             return
 
         try:
@@ -454,13 +458,13 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 ScriptGithubComponent._airflow_db_checked = True
 
         except (FileNotFoundError, ModuleNotFoundError) as e:
-            logger.debug(f"Airflow not available ({e.__class__.__name__}) - skipping DB initialization check")
+            logger.info(f"⏭️  Airflow not available ({e.__class__.__name__}: {e}) - skipping DB initialization check")
             ScriptGithubComponent._airflow_db_checked = True  # Don't check again
         except subprocess.TimeoutExpired:
-            logger.warning("Airflow DB check timed out - skipping initialization")
+            logger.warning("⏱️  Airflow DB check timed out - skipping initialization")
             ScriptGithubComponent._airflow_db_checked = True  # Don't check again
         except Exception as e:
-            logger.debug(f"Could not check Airflow DB: {e}")
+            logger.warning(f"⚠️  Could not check Airflow DB: {e}")
             ScriptGithubComponent._airflow_db_checked = True  # Don't check again
 
 
