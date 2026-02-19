@@ -368,11 +368,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             if result.returncode == 0:
                 logger.info(f"Successfully installed {orchestrator} {version}")
 
-                # Initialize Airflow DB after installation
+                # Initialize Airflow DB after installation (if we have repo_path)
+                # Will be called again from build_defs_from_state with proper repo_path
                 if orchestrator == "airflow":
-                    logger.info("Initializing Airflow database...")
                     ScriptGithubComponent._airflow_db_checked = False  # Reset flag
-                    self._ensure_airflow_db_initialized()
             else:
                 logger.error(
                     f"Failed to install {orchestrator} {version}. "
@@ -386,12 +385,15 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         except Exception as e:
             logger.error(f"Error installing {orchestrator} {version}: {e}")
 
-    def _ensure_airflow_db_initialized(self):
+    def _ensure_airflow_db_initialized(self, repo_path: str):
         """Ensure Airflow database is initialized (one-time check).
 
         This check runs once when definitions are first built to ensure the Airflow
         database is initialized before any DAG executions. Uses sys.executable to
         invoke airflow as a module from the current Python environment.
+
+        Args:
+            repo_path: Path to the repository/scripts directory
         """
         logger.info(f"🔍 Checking Airflow DB initialization (enabled={self.airflow_enabled}, checked={ScriptGithubComponent._airflow_db_checked})")
 
@@ -409,7 +411,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             # Set up environment with AIRFLOW_HOME
             env = os.environ.copy()
             # Use repo directory for Airflow home to isolate from system Airflow
-            airflow_home = Path(self.repo_path) / ".airflow"
+            airflow_home = Path(repo_path) / ".airflow"
             airflow_home.mkdir(exist_ok=True)
             env["AIRFLOW_HOME"] = str(airflow_home)
             env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
@@ -450,7 +452,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     logger.error(
                         f"Failed to initialize Airflow database:\n{error_msg}\n"
                         "Airflow DAGs may not execute properly. "
-                        f"Try running manually: cd {self.repo_path} && AIRFLOW_HOME={airflow_home} uv run airflow db migrate"
+                        f"Try running manually: cd {repo_path} && AIRFLOW_HOME={airflow_home} uv run airflow db migrate"
                     )
             else:
                 # DB already initialized
@@ -589,9 +591,6 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         Returns:
             Definitions containing discovered assets, jobs, sensors, and schedules
         """
-        # Ensure Airflow DB is initialized (one-time check) before building any Airflow assets
-        self._ensure_airflow_db_initialized()
-
         if state_path is None or not state_path.exists():
             logger.warning("No scripts state found. Run refresh to discover scripts.")
             return Definitions()
@@ -601,6 +600,11 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         if state.error:
             logger.error(f"Error in scripts state: {state.error}")
             return Definitions()
+
+        # Ensure Airflow DB is initialized (one-time check) before building any Airflow assets
+        # Now that we have state loaded, we can access repo_path
+        if state.repo_path:
+            self._ensure_airflow_db_initialized(state.repo_path)
 
         all_assets = []
         all_jobs = []
