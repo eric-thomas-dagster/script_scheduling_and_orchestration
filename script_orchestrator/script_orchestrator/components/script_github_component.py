@@ -488,8 +488,8 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
 
     def _extract_connection_ids_from_dags(self) -> dict:
-        """Extract all connection IDs used in DAG files."""
-        connection_ids = {}  # conn_id -> conn_type
+        """Extract all connection IDs and their parameters from DAG files."""
+        connections = {}  # conn_id -> {type, params}
 
         # Scan all dag-factory YAML files
         for script_info in self.discovered_scripts:
@@ -515,15 +515,54 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                             # Look for *_conn_id fields
                             for key, value in task_config.items():
                                 if key.endswith('_conn_id') and isinstance(value, str):
-                                    # Infer connection type from the field name
-                                    conn_type = self._infer_connection_type(key, task_config.get('operator', ''))
-                                    connection_ids[value] = conn_type
-                                    logger.debug(f"Found connection ID: {value} (type: {conn_type})")
+                                    if value not in connections:
+                                        # Infer connection type and extract parameters
+                                        conn_type = self._infer_connection_type(key, task_config.get('operator', ''))
+                                        conn_params = self._extract_connection_params(task_config, conn_type)
+                                        connections[value] = {
+                                            'type': conn_type,
+                                            'params': conn_params
+                                        }
+                                        logger.debug(f"Found connection: {value} (type: {conn_type}, params: {conn_params})")
 
                 except Exception as e:
                     logger.debug(f"Could not extract connections from {script_info.script_path}: {e}")
 
-        return connection_ids
+        return connections
+
+    def _extract_connection_params(self, task_config: dict, conn_type: str) -> dict:
+        """Extract connection-specific parameters from task config."""
+        params = {}
+
+        # Extract parameters based on connection type
+        if conn_type == 'snowflake':
+            # Snowflake-specific parameters
+            for key in ['warehouse', 'database', 'schema', 'role', 'account']:
+                if key in task_config:
+                    params[key] = task_config[key]
+
+        elif conn_type == 'aws':
+            # AWS-specific parameters
+            for key in ['region_name', 'aws_access_key_id', 'aws_secret_access_key']:
+                if key in task_config:
+                    params[key] = task_config[key]
+            # S3-specific
+            if 'bucket_name' in task_config:
+                params['bucket_name'] = task_config['bucket_name']
+
+        elif conn_type == 'postgres' or conn_type == 'mysql':
+            # Database-specific parameters
+            for key in ['host', 'port', 'database', 'schema']:
+                if key in task_config:
+                    params[key] = task_config[key]
+
+        elif conn_type == 'http':
+            # HTTP-specific parameters
+            for key in ['host', 'port', 'endpoint', 'method']:
+                if key in task_config:
+                    params[key] = task_config[key]
+
+        return params
 
     def _infer_connection_type(self, conn_id_field: str, operator: str) -> str:
         """Infer Airflow connection type from field name or operator."""
@@ -546,18 +585,21 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             return 'generic'  # Fallback
 
     def _create_stub_airflow_connections(self, env: dict):
-        """Create stub Airflow connections for all connection IDs found in DAGs."""
-        # Discover connection IDs from DAG files
-        connection_ids = self._extract_connection_ids_from_dags()
+        """Create Airflow connections with parameters from DAG files."""
+        # Discover connections from DAG files
+        connections = self._extract_connection_ids_from_dags()
 
-        if not connection_ids:
+        if not connections:
             logger.debug("No connection IDs found in DAG files")
             return
 
-        logger.info(f"Creating stub Airflow connections for {len(connection_ids)} discovered connection(s)...")
+        logger.info(f"Creating Airflow connections for {len(connections)} discovered connection(s)...")
 
-        for conn_id, conn_type in connection_ids.items():
+        for conn_id, conn_info in connections.items():
             try:
+                conn_type = conn_info['type']
+                conn_params = conn_info['params']
+
                 # Check if connection already exists
                 check_cmd = self._build_airflow_command("connections", "get", conn_id)
                 check_result = subprocess.run(
@@ -573,15 +615,53 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     logger.debug(f"Connection {conn_id} already exists")
                     continue
 
-                # Create the connection with appropriate defaults
+                # Build connection creation command
                 add_cmd = self._build_airflow_command(
                     "connections", "add", conn_id,
                     "--conn-type", conn_type
                 )
 
-                # Add default host/port for HTTP connections
-                if conn_type == 'http':
-                    add_cmd.extend(["--conn-host", "localhost", "--conn-port", "8080"])
+                # Add connection-specific parameters
+                if conn_type == 'snowflake':
+                    # Use JSON extra for Snowflake parameters
+                    import json
+                    extra = {}
+                    for key in ['warehouse', 'database', 'schema', 'role', 'account']:
+                        if key in conn_params:
+                            extra[key] = conn_params[key]
+                    if extra:
+                        add_cmd.extend(["--conn-extra", json.dumps(extra)])
+
+                elif conn_type == 'http':
+                    # HTTP connection parameters
+                    if 'host' in conn_params:
+                        add_cmd.extend(["--conn-host", conn_params['host']])
+                    else:
+                        add_cmd.extend(["--conn-host", "localhost"])
+
+                    if 'port' in conn_params:
+                        add_cmd.extend(["--conn-port", str(conn_params['port'])])
+                    else:
+                        add_cmd.extend(["--conn-port", "8080"])
+
+                elif conn_type in ['postgres', 'mysql']:
+                    # Database connection parameters
+                    if 'host' in conn_params:
+                        add_cmd.extend(["--conn-host", conn_params['host']])
+                    if 'port' in conn_params:
+                        add_cmd.extend(["--conn-port", str(conn_params['port'])])
+                    if 'database' in conn_params:
+                        add_cmd.extend(["--conn-schema", conn_params['database']])
+
+                elif conn_type == 'aws':
+                    # AWS connection parameters
+                    import json
+                    extra = {}
+                    for key in ['region_name', 'bucket_name']:
+                        if key in conn_params:
+                            extra[key] = conn_params[key]
+                    if extra:
+                        add_cmd.extend(["--conn-extra", json.dumps(extra)])
 
                 result = subprocess.run(
                     add_cmd,
@@ -593,7 +673,8 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 )
 
                 if result.returncode == 0:
-                    logger.info(f"  ✅ Created stub connection: {conn_id} (type: {conn_type})")
+                    param_str = ', '.join(f"{k}={v}" for k, v in conn_params.items()) if conn_params else 'default'
+                    logger.info(f"  ✅ Created connection: {conn_id} (type: {conn_type}, params: {param_str})")
                 else:
                     logger.debug(f"Could not create connection {conn_id}: {result.stderr}")
 
