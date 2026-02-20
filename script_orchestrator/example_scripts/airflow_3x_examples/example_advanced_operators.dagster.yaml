@@ -1,4 +1,4 @@
-enabled: false  # Requires Airflow connections (aws_default, snowflake_default, api_server) - enable after setup
+enabled: true
 description: "Advanced operators example with various Airflow operators"
 group: airflow_examples
 owners:

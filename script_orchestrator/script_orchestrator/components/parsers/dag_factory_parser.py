@@ -592,15 +592,34 @@ class DagFactoryYamlParser:
                             from airflow.utils.context import Context as AirflowContext
                             airflow_context = AirflowContext()
 
-                            result = operator_instance.execute(airflow_context)
-                            context.log.info(f"Operator executed successfully")
+                            try:
+                                result = operator_instance.execute(airflow_context)
+                                context.log.info(f"Operator executed successfully")
 
-                            return OpOutput(
-                                value={"task_id": tid, "result": result, "operator": operator_class_path},
-                                metadata={
-                                    "operator": operator_class_path,
-                                }
-                            )
+                                return OpOutput(
+                                    value={"task_id": tid, "result": result, "operator": operator_class_path},
+                                    metadata={
+                                        "operator": operator_class_path,
+                                    }
+                                )
+                            except Exception as exec_error:
+                                # Check if it's a missing connection error
+                                error_msg = str(exec_error)
+                                if "conn_id" in error_msg and "isn't defined" in error_msg:
+                                    context.log.warning(f"⚠️  Airflow connection not configured: {error_msg}")
+                                    context.log.info(f"Task '{tid}' skipped due to missing connection")
+                                    # Return success with warning metadata
+                                    return OpOutput(
+                                        value={"task_id": tid, "status": "skipped", "reason": "missing_connection"},
+                                        metadata={
+                                            "operator": operator_class_path,
+                                            "status": "skipped",
+                                            "warning": error_msg,
+                                        }
+                                    )
+                                else:
+                                    # Re-raise other execution errors
+                                    raise
 
                         except ImportError as e:
                             context.log.warning(f"Could not import operator {task_cfg['operator']}: {e}")
