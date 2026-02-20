@@ -134,7 +134,8 @@ class ScriptMetadata(BaseModel):
     # Dependencies
     depends_on: List[str] = Field(
         default_factory=list,
-        description="List of script names this script depends on"
+        description="List of script names this script depends on",
+        alias="deps"  # Accept 'deps' in YAML
     )
 
     # Scheduling

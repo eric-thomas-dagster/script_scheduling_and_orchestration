@@ -1,0 +1,27 @@
+enabled: true
+script_type: prefect
+description: "Consumer flow: Generates combined report from customer and sales data"
+group_name: prefect_examples
+owners:
+  - "team:analytics"
+tags:
+  pattern: consumer
+  demonstrates: lineage_consumer_multi_input
+kinds:
+  - python
+  - prefect
+  - reporting
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true
+  mode: "graph_asset"
+
+# This flow depends on upstream flows
+deps:
+  - script_producer_customer_data
+  - script_producer_sales_data
+
+# This flow produces a report
+produces:
+  - executive_summary_report

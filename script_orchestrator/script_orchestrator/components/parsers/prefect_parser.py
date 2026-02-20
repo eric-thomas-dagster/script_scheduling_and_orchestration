@@ -246,9 +246,14 @@ class PrefectParser(BaseParser):
         tasks_info: List[Dict],
         script_info: Any,
         metadata: Any,
-        repo_path: str
+        repo_path: str,
+        dependencies: Optional[List[str]] = None
     ):
-        """Try to create graph asset using module monkey patching."""
+        """Try to create graph asset using module monkey patching.
+
+        Args:
+            dependencies: List of asset names this flow depends on (for lineage)
+        """
         flow_name = flow_info['name']
         flow_params = flow_info.get('parameters', [])
 
@@ -496,6 +501,12 @@ class PrefectParser(BaseParser):
             if op_config:
                 graph_asset_kwargs['config'] = op_config
                 logger.info(f"✅ Added config to graph_asset: {op_config}")
+
+            # Add dependencies if provided (for lineage)
+            if dependencies:
+                from dagster import AssetKey
+                graph_asset_kwargs['deps'] = [AssetKey(dep) for dep in dependencies]
+                logger.info(f"✅ Added dependencies to graph_asset: {dependencies}")
 
             # Wrap the flow function with @graph_asset
             graph_asset_decorated = graph_asset(**graph_asset_kwargs)(flow_func)
@@ -754,9 +765,14 @@ class PrefectParser(BaseParser):
         tasks_info: List[Dict],
         script_info: Any,
         metadata: Any,
-        repo_path: str
+        repo_path: str,
+        dependencies: Optional[List[str]] = None
     ):
-        """Create a graph-backed asset for a Prefect flow."""
+        """Create a graph-backed asset for a Prefect flow.
+
+        Args:
+            dependencies: List of asset names this flow depends on (for lineage)
+        """
         flow_name = flow_info['name']
         task_calls = flow_info['task_calls']
         has_complex_patterns = flow_info['has_complex_patterns']
@@ -764,7 +780,7 @@ class PrefectParser(BaseParser):
 
         # Try monkey patch approach first - this works for all flows regardless of complexity!
         monkey_patched_asset = self.try_monkey_patch_approach(
-            flow_info, tasks_info, script_info, metadata, repo_path
+            flow_info, tasks_info, script_info, metadata, repo_path, dependencies
         )
         if monkey_patched_asset is not None:
             return monkey_patched_asset

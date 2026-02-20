@@ -1261,7 +1261,8 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
     ):
         """Create a graph-backed asset for a Prefect flow."""
         return self.prefect_parser.create_graph_asset(
-            flow_info, tasks_info, script_info, metadata, repo_path
+            flow_info, tasks_info, script_info, metadata, repo_path,
+            dependencies=metadata.depends_on if metadata.depends_on else None
         )
 
     def _create_prefect_flow_job(

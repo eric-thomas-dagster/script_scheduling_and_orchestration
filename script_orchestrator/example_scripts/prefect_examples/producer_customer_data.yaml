@@ -1,0 +1,23 @@
+enabled: true
+script_type: prefect
+description: "Producer flow: Extracts and processes customer data"
+group_name: prefect_examples
+owners:
+  - "team:data_engineering"
+tags:
+  pattern: producer
+  data_type: customer
+  demonstrates: lineage_producer
+kinds:
+  - python
+  - prefect
+  - etl
+
+prefect_mapping:
+  enabled: true
+  fallback_on_error: true
+  mode: "graph_asset"
+
+# This flow produces data
+produces:
+  - processed_customer_data
