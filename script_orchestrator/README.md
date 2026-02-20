@@ -9,7 +9,10 @@ A Dagster component for orchestrating and migrating existing Airflow and Prefect
 - **Automatic version detection**: Filters DAGs based on installed orchestrator version
 - **dag-factory support**: Load Airflow DAGs defined in YAML
 - **Asset materialization**: Execute workflows and track data assets in Dagster
-- **Dataset/Inlet/Outlet support**: Map Airflow datasets to Dagster assets with full lineage tracking
+- **Cross-DAG lineage tracking**: Full support for Airflow Assets/Datasets and Prefect flow dependencies
+- **Automatic connection discovery**: Extracts connection parameters from DAG YAML files and creates Airflow connections
+- **Demo mode**: Gracefully handles missing services, connections, and files for demonstration purposes
+- **Descriptive asset naming**: Prefect flows use `prefect_*`, Airflow DAGs use `airflow_*`, Python scripts use `script_*`
 
 ## Asset Lineage
 
@@ -63,6 +66,35 @@ def generate_report():
 
 The resulting `airflow_dataset_combined_report` asset will show dependencies on both upstream assets in the lineage graph.
 
+### Prefect Flow Dependencies
+
+Prefect flows can be chained with dependencies using the `deps` parameter in YAML:
+
+```yaml
+# producer_flow.yaml
+enabled: true
+script_type: prefect
+group_name: prefect_examples
+prefect_mapping:
+  enabled: true
+  mode: graph_asset
+```
+
+```yaml
+# consumer_flow.yaml
+enabled: true
+script_type: prefect
+group_name: prefect_examples
+deps:
+  - producer_customer_data  # Depends on this flow
+  - producer_sales_data      # And this flow
+prefect_mapping:
+  enabled: true
+  mode: graph_asset
+```
+
+This creates proper lineage: `prefect_producer_customer_data` + `prefect_producer_sales_data` → `prefect_consumer_flow`
+
 ### Configuration
 
 To enable asset lineage for Python DAGs, create a companion YAML file:
@@ -76,6 +108,46 @@ airflow_mapping:
   enabled: true
   mode: graph_asset
 ```
+
+## Demo Mode & Connection Handling
+
+The component includes intelligent demo mode capabilities for running examples without full infrastructure:
+
+### Automatic Connection Discovery
+
+- **Scans DAG YAML files** for connection IDs (`*_conn_id` fields)
+- **Extracts connection parameters**: Snowflake warehouse/database/schema, AWS region, HTTP endpoints, etc.
+- **Creates Airflow connections** automatically with parameters from YAML
+- **Supports**: Snowflake, AWS, Postgres, MySQL, HTTP, GCP, Azure, and more
+
+### Graceful Failure Handling
+
+When running in demo mode without real services:
+- **Missing connections** → Task skips with warning
+- **Authentication failures** → Task skips with warning
+- **Missing files/scripts** → Task skips with warning
+- **Connection timeouts** → Task skips with warning
+
+Tasks that fail due to missing infrastructure are automatically skipped, allowing you to:
+- ✅ See DAG structure and lineage
+- ✅ Understand task dependencies
+- ✅ Test workflow logic
+- ✅ Demo without requiring actual Snowflake/AWS/etc. accounts
+
+## Asset Naming Conventions
+
+Assets are prefixed by type for clarity:
+- **Prefect flows**: `prefect_flow_name`
+- **Airflow DAGs**: `airflow_dag_name`
+- **Python/Dask/Spark scripts**: `script_name`
+- **Airflow datasets**: `airflow_dataset_name`
+
+## Asset Groups
+
+Examples are organized into logical groups:
+- **python_examples**: Python, Dask, and Spark scripts
+- **prefect_examples**: Prefect flows and migrations
+- **airflow_examples**: Airflow 2.x/3.x DAGs and dag-factory examples
 
 ## Quick Start
 
@@ -185,13 +257,18 @@ script_orchestrator/
 │   └── scripts/
 │       └── defs.yaml             # Component configuration
 ├── example_scripts/              # Sample workflows
-│   ├── airflow/                 # Airflow DAGs
-│   ├── prefect/                 # Prefect flows
-│   └── dag_factory/             # YAML-defined DAGs
+│   ├── airflow_2x_examples/     # Airflow 2.x DAGs (Dataset API)
+│   ├── airflow_3x_examples/     # Airflow 3.x DAGs (Asset API)
+│   │   └── scripts/             # Helper scripts for Bash operators
+│   ├── prefect_examples/        # Prefect flows with dependencies
+│   ├── python_examples/         # Python scripts (including Dask/Spark)
+│   └── basic_python/            # Basic Python ETL pipeline
 ├── script_orchestrator/
-│   └── components/
-│       ├── script_github_component.py  # Main component
-│       └── parsers/                    # Airflow/Prefect parsers
+│   ├── components/
+│   │   ├── script_github_component.py  # Main component
+│   │   └── parsers/             # Airflow/Prefect/dag-factory parsers
+│   └── schemas/
+│       └── script_metadata.py   # YAML configuration schemas
 ├── pyproject.toml               # Python dependencies
 └── verify_setup.py              # Setup verification script
 ```
@@ -200,9 +277,25 @@ script_orchestrator/
 
 ### Adding New Scripts
 
-1. Place scripts in the `example_scripts/` directory (or configured `SCRIPTS_DIR`)
-2. Organize by orchestrator type: `airflow/`, `prefect/`, `dag_factory/`
-3. Scripts are auto-discovered on startup
+1. **Place scripts** in the `example_scripts/` directory (or configured `SCRIPTS_DIR`)
+2. **Organize by type**:
+   - Airflow: `airflow_2x_examples/` or `airflow_3x_examples/`
+   - Prefect: `prefect_examples/`
+   - Python: `python_examples/` or `basic_python/`
+3. **Create companion YAML** for metadata:
+   ```yaml
+   enabled: true
+   script_type: prefect  # or airflow, python, dask, spark
+   description: "Your script description"
+   group_name: prefect_examples
+   deps:  # Optional: dependencies for lineage
+     - upstream_script_name
+   kinds:
+     - python
+     - etl
+   ```
+4. **Track with git** - scripts must be git-tracked to be discovered
+5. **Restart Dagster** to see new scripts
 
 ### Airflow Version Targeting
 
