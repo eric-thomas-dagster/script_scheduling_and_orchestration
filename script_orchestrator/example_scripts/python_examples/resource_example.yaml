@@ -1,0 +1,14 @@
+enabled: true
+description: "Example script demonstrating resource auto-detection"
+group: python_examples
+owners:
+  - "engineering@company.com"
+tags:
+  type: demo
+  demonstrates: resource_detection
+kinds:
+  - python
+  - postgres
+  - s3
+  - redis
+  - api
