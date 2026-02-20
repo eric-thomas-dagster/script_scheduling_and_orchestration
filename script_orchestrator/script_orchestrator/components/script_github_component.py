@@ -1260,9 +1260,15 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         metadata: ScriptMetadata, repo_path: str
     ):
         """Create a graph-backed asset for a Prefect flow."""
+        # Build dependency AssetKeys (add script_ prefix like regular assets do)
+        deps = []
+        if metadata.depends_on:
+            for dep_name in metadata.depends_on:
+                deps.append(f"script_{dep_name}")
+
         return self.prefect_parser.create_graph_asset(
             flow_info, tasks_info, script_info, metadata, repo_path,
-            dependencies=metadata.depends_on if metadata.depends_on else None
+            dependencies=deps if deps else None
         )
 
     def _create_prefect_flow_job(

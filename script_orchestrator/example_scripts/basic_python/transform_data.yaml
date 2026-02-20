@@ -1,6 +1,6 @@
 enabled: true
 description: "Transforms extracted data for analysis"
-group: data_pipeline
+group: python_examples
 owners:
   - data-team@company.com
 tags:

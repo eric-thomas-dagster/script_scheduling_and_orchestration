@@ -1,6 +1,6 @@
 enabled: true
 description: "Generates summary report from transformed data"
-group: reporting
+group: python_examples
 owners:
   - reporting-team@company.com
 tags:

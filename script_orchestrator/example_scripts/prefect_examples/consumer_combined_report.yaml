@@ -19,8 +19,8 @@ prefect_mapping:
 
 # This flow depends on upstream flows
 deps:
-  - script_producer_customer_data
-  - script_producer_sales_data
+  - producer_customer_data
+  - producer_sales_data
 
 # This flow produces a report
 produces:
