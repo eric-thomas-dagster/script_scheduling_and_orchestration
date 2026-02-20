@@ -1916,6 +1916,12 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         for kind in metadata.kinds:
             asset_tags[f"dagster/kind/{kind}"] = ""
 
+        # Add tags from DAG decorator
+        dag_tags = dag_info.get('tags', [])
+        if dag_tags:
+            for tag in dag_tags:
+                asset_tags[f"airflow_tag_{tag}"] = ""
+
         # Build AssetOuts for each outlet dataset with dagster_type=Nothing
         # This tells Dagster not to try to persist outputs (we only yield metadata)
         asset_outs = {}
@@ -1963,15 +1969,39 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
             # Build metadata dict
             asset_metadata = {
-                "airflow_dag_id": dag_id,
-                "dataset_uri": dataset_uri,
+                "airflow_dag_id": MetadataValue.text(dag_id),
+                "dataset_uri": MetadataValue.text(dataset_uri),
             }
             if version_warning:
-                asset_metadata["airflow_version_warning"] = version_warning
+                asset_metadata["airflow_version_warning"] = MetadataValue.text(version_warning)
+
+            # Add enhanced metadata from DAG default_args
+            if dag_info.get('owner'):
+                asset_metadata["owner"] = MetadataValue.text(dag_info['owner'])
+            if dag_info.get('email'):
+                asset_metadata["email"] = MetadataValue.text(dag_info['email'])
+            if dag_info.get('pool'):
+                asset_metadata["pool"] = MetadataValue.text(dag_info['pool'])
+            if dag_info.get('queue'):
+                asset_metadata["queue"] = MetadataValue.text(dag_info['queue'])
+            if dag_info.get('priority_weight'):
+                asset_metadata["priority_weight"] = MetadataValue.int(dag_info['priority_weight'])
+            if dag_info.get('execution_timeout'):
+                asset_metadata["execution_timeout"] = MetadataValue.text(str(dag_info['execution_timeout']))
+            if dag_info.get('sla'):
+                asset_metadata["sla"] = MetadataValue.text(str(dag_info['sla']))
+            if dag_info.get('email_on_failure') is not None:
+                asset_metadata["email_on_failure"] = MetadataValue.bool(dag_info['email_on_failure'])
+            if dag_info.get('email_on_retry') is not None:
+                asset_metadata["email_on_retry"] = MetadataValue.bool(dag_info['email_on_retry'])
+
+            # Use metadata description, fallback to DAG docstring, then default
+            base_desc = metadata.description or dag_info.get('docstring') or f"Airflow DAG {dag_id}"
+            dataset_desc = f"{base_desc}\nDataset: {dataset_uri}"
 
             asset_outs[dataset_asset_key] = AssetOut(
                 dagster_type=Nothing,
-                description=f"Dataset produced by Airflow DAG {dag_id}: {dataset_uri}",
+                description=dataset_desc,
                 group_name=metadata.group_name,
                 metadata=asset_metadata,
                 tags=asset_tags,
@@ -1989,13 +2019,36 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             asset_deps_map[dag_asset_key] = dag_deps
 
             # Build metadata dict
-            dag_asset_metadata = {"airflow_dag_id": dag_id}
+            dag_asset_metadata = {"airflow_dag_id": MetadataValue.text(dag_id)}
             if version_warning:
-                dag_asset_metadata["airflow_version_warning"] = version_warning
+                dag_asset_metadata["airflow_version_warning"] = MetadataValue.text(version_warning)
+
+            # Add enhanced metadata from DAG default_args
+            if dag_info.get('owner'):
+                dag_asset_metadata["owner"] = MetadataValue.text(dag_info['owner'])
+            if dag_info.get('email'):
+                dag_asset_metadata["email"] = MetadataValue.text(dag_info['email'])
+            if dag_info.get('pool'):
+                dag_asset_metadata["pool"] = MetadataValue.text(dag_info['pool'])
+            if dag_info.get('queue'):
+                dag_asset_metadata["queue"] = MetadataValue.text(dag_info['queue'])
+            if dag_info.get('priority_weight'):
+                dag_asset_metadata["priority_weight"] = MetadataValue.int(dag_info['priority_weight'])
+            if dag_info.get('execution_timeout'):
+                dag_asset_metadata["execution_timeout"] = MetadataValue.text(str(dag_info['execution_timeout']))
+            if dag_info.get('sla'):
+                dag_asset_metadata["sla"] = MetadataValue.text(str(dag_info['sla']))
+            if dag_info.get('email_on_failure') is not None:
+                dag_asset_metadata["email_on_failure"] = MetadataValue.bool(dag_info['email_on_failure'])
+            if dag_info.get('email_on_retry') is not None:
+                dag_asset_metadata["email_on_retry"] = MetadataValue.bool(dag_info['email_on_retry'])
+
+            # Use metadata description, fallback to DAG docstring, then default
+            description = metadata.description or dag_info.get('docstring') or f"Airflow DAG: {dag_id}"
 
             asset_outs[dag_asset_key] = AssetOut(
                 dagster_type=Nothing,
-                description=metadata.description or f"Airflow DAG: {dag_id}",
+                description=description,
                 group_name=metadata.group_name,
                 metadata=dag_asset_metadata,
                 tags=asset_tags,
@@ -2493,15 +2546,57 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     context.log.warning(f"  Unsupported operator: {task_config['operator']}")
                     results[task_id] = None
 
+            # Build enhanced metadata from default_args
+            output_metadata = {
+                "dag_id": MetadataValue.text(dag_id),
+                "source": MetadataValue.text("dag_factory_yaml"),
+                "yaml_file": MetadataValue.path(str(yaml_path)),
+                "tasks_executed": MetadataValue.int(len(task_order)),
+            }
+
+            # Add enhanced metadata from DAG default_args
+            if default_args.get('owner'):
+                output_metadata["owner"] = MetadataValue.text(default_args['owner'])
+            if default_args.get('email'):
+                output_metadata["email"] = MetadataValue.text(default_args['email'])
+            if default_args.get('pool'):
+                output_metadata["pool"] = MetadataValue.text(default_args['pool'])
+            if default_args.get('queue'):
+                output_metadata["queue"] = MetadataValue.text(default_args['queue'])
+            if default_args.get('priority_weight'):
+                output_metadata["priority_weight"] = MetadataValue.int(default_args['priority_weight'])
+            if default_args.get('execution_timeout'):
+                output_metadata["execution_timeout"] = MetadataValue.text(str(default_args['execution_timeout']))
+            if default_args.get('sla'):
+                output_metadata["sla"] = MetadataValue.text(str(default_args['sla']))
+            if default_args.get('email_on_failure') is not None:
+                output_metadata["email_on_failure"] = MetadataValue.bool(default_args['email_on_failure'])
+            if default_args.get('email_on_retry') is not None:
+                output_metadata["email_on_retry"] = MetadataValue.bool(default_args['email_on_retry'])
+
             return Output(
                 value={"dag_id": dag_id, "task_results": results},
-                metadata={
-                    "dag_id": MetadataValue.text(dag_id),
-                    "source": MetadataValue.text("dag_factory_yaml"),
-                    "yaml_file": MetadataValue.path(str(yaml_path)),
-                    "tasks_executed": MetadataValue.int(len(task_order)),
-                }
+                metadata=output_metadata
             )
+
+        # Build static metadata for asset definition
+        asset_metadata = {
+            "dag_id": MetadataValue.text(dag_id),
+            "source": MetadataValue.text("dag_factory_yaml"),
+            "yaml_file": MetadataValue.path(str(yaml_path)),
+        }
+
+        # Add enhanced metadata from DAG default_args
+        if default_args.get('owner'):
+            asset_metadata["owner"] = MetadataValue.text(default_args['owner'])
+        if default_args.get('email'):
+            asset_metadata["email"] = MetadataValue.text(default_args['email'])
+        if default_args.get('pool'):
+            asset_metadata["pool"] = MetadataValue.text(default_args['pool'])
+        if default_args.get('queue'):
+            asset_metadata["queue"] = MetadataValue.text(default_args['queue'])
+        if default_args.get('priority_weight'):
+            asset_metadata["priority_weight"] = MetadataValue.int(default_args['priority_weight'])
 
         # Create the asset
         asset_kwargs = {
@@ -2510,6 +2605,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             "tags": asset_tags,
             "description": dag_info.get('description', f"DAG Factory: {dag_id}"),
             "retry_policy": retry_policy,
+            "metadata": asset_metadata,
         }
 
         dag_factory_asset = asset(**asset_kwargs)(dag_factory_yaml_asset)

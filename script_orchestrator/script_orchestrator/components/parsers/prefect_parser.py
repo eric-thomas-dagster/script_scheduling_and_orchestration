@@ -175,11 +175,22 @@ class PrefectParser(BaseParser):
                         task_calls, has_complex_patterns = self._extract_task_calls(node, tasks)
                         flow_params = self.extract_function_parameters(node)
 
+                        # Extract docstring if available
+                        docstring = ast.get_docstring(node)
+                        if docstring:
+                            # Clean up the docstring (remove extra whitespace, take first line/paragraph)
+                            docstring = docstring.strip()
+                            # Take first line or first paragraph as description
+                            first_line = docstring.split('\n\n')[0].replace('\n', ' ').strip()
+                        else:
+                            first_line = None
+
                         flow_info = {
                             'name': node.name,
                             'task_calls': task_calls,
                             'has_complex_patterns': has_complex_patterns,
-                            'parameters': flow_params
+                            'parameters': flow_params,
+                            'docstring': first_line
                         }
                         flows.append(flow_info)
 
@@ -491,12 +502,15 @@ class PrefectParser(BaseParser):
 
                 op_config = {}
 
+            # Use metadata description, fallback to flow docstring, then default
+            description = metadata.description or flow_info.get('docstring') or f"Prefect flow (monkey patched): {flow_name}"
+
             # Build graph_asset kwargs
             graph_asset_kwargs = {
                 'name': f"{asset_prefix}_{script_info.name}",
                 'group_name': metadata.group_name,
                 'tags': asset_tags,
-                'description': metadata.description or f"Prefect flow (monkey patched): {flow_name}",
+                'description': description,
             }
 
             # Add config if we have it
@@ -733,11 +747,14 @@ class PrefectParser(BaseParser):
 
                 logger.info(f"✅ Stripped return statements from flow {flow_name} for job")
 
+            # Use metadata description, fallback to flow docstring, then default
+            job_description = metadata.description or flow_info.get('docstring') or f"Prefect flow (monkey patched job): {flow_name}"
+
             # Build job kwargs
             job_kwargs = {
                 'name': f"script_{script_info.name}",
                 'tags': job_tags,
-                'description': metadata.description or f"Prefect flow (monkey patched job): {flow_name}",
+                'description': job_description,
             }
 
             # Add config if we have it
@@ -950,12 +967,15 @@ class PrefectParser(BaseParser):
         exec(func_code, local_vars)
         flow_graph_func = local_vars['flow_graph']
 
+        # Use metadata description, fallback to flow docstring, then default
+        description = metadata.description or flow_info.get('docstring') or f"Prefect flow: {flow_name}"
+
         # Build graph_asset kwargs
         graph_asset_kwargs = {
             'name': f"{asset_prefix}_{script_info.name}",
             'group_name': metadata.group_name,
             'tags': asset_tags,
-            'description': metadata.description or f"Prefect flow: {flow_name}",
+            'description': description,
         }
 
         # Add dependencies if provided (for lineage)

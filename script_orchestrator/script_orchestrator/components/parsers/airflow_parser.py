@@ -200,6 +200,15 @@ class AirflowParser(BaseParser):
                         # Extract DAG parameters from decorator
                         dag_config = self._extract_dag_config(node)
 
+                        # Extract docstring if available
+                        docstring = ast.get_docstring(node)
+                        if docstring:
+                            # Clean up the docstring (remove extra whitespace, take first line/paragraph)
+                            docstring = docstring.strip()
+                            # Take first line or first paragraph as description
+                            first_line = docstring.split('\n\n')[0].replace('\n', ' ').strip()
+                            dag_config['docstring'] = first_line
+
                         # Detect which Airflow version this DAG was written for
                         dag_airflow_version = self._detect_dag_airflow_version(dag_config, script_path)
                         logger.info(f"Detected {script_path.name} as Airflow {dag_airflow_version} based on imports and syntax")
@@ -270,6 +279,16 @@ class AirflowParser(BaseParser):
                             'retries': dag_config.get('retries'),
                             'retry_delay': dag_config.get('retry_delay'),
                             'tags': dag_config.get('tags', []),
+                            'docstring': dag_config.get('docstring'),  # Extracted from DAG function docstring
+                            'owner': dag_config.get('owner'),
+                            'email': dag_config.get('email'),
+                            'email_on_failure': dag_config.get('email_on_failure'),
+                            'email_on_retry': dag_config.get('email_on_retry'),
+                            'pool': dag_config.get('pool'),
+                            'priority_weight': dag_config.get('priority_weight'),
+                            'queue': dag_config.get('queue'),
+                            'execution_timeout': dag_config.get('execution_timeout'),
+                            'sla': dag_config.get('sla'),
                             'advanced_features': advanced_features,
                             'inlet_datasets': inlet_datasets,  # Datasets this DAG consumes
                             'outlet_datasets': outlet_datasets,  # Datasets this DAG produces (from DAG or tasks)
@@ -379,13 +398,35 @@ class AirflowParser(BaseParser):
                                             pass
 
                         elif keyword.arg == 'default_args':
-                            # Extract default_args dict which may contain retries, retry_delay
+                            # Extract default_args dict - extract multiple useful fields
                             if isinstance(keyword.value, ast.Dict):
                                 default_args = self._extract_dict_literal(keyword.value)
+                                # Retry configuration
                                 if 'retries' in default_args:
                                     dag_config['retries'] = default_args['retries']
                                 if 'retry_delay' in default_args:
                                     dag_config['retry_delay'] = default_args['retry_delay']
+                                # Owner and contact information
+                                if 'owner' in default_args:
+                                    dag_config['owner'] = default_args['owner']
+                                if 'email' in default_args:
+                                    dag_config['email'] = default_args['email']
+                                if 'email_on_failure' in default_args:
+                                    dag_config['email_on_failure'] = default_args['email_on_failure']
+                                if 'email_on_retry' in default_args:
+                                    dag_config['email_on_retry'] = default_args['email_on_retry']
+                                # Performance and resource configuration
+                                if 'pool' in default_args:
+                                    dag_config['pool'] = default_args['pool']
+                                if 'priority_weight' in default_args:
+                                    dag_config['priority_weight'] = default_args['priority_weight']
+                                if 'queue' in default_args:
+                                    dag_config['queue'] = default_args['queue']
+                                # Timeout configuration
+                                if 'execution_timeout' in default_args:
+                                    dag_config['execution_timeout'] = default_args['execution_timeout']
+                                if 'sla' in default_args:
+                                    dag_config['sla'] = default_args['sla']
 
                         elif keyword.arg == 'retries':
                             try:
