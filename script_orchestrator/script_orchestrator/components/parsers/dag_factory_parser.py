@@ -184,6 +184,9 @@ class DagFactoryYamlParser:
                     # Parse asset outlets - assets produced by this task
                     outlets = task_config.get('outlets', [])
                     if outlets:
+                        # Store outlets on the task dict so _build_assets_and_job_from_dag can find them
+                        task_info['outlets'] = outlets
+
                         for outlet in outlets:
                             if isinstance(outlet, dict) and outlet.get('__type__') == 'airflow.sdk.Asset':
                                 asset_name = outlet.get('name')
@@ -204,6 +207,8 @@ class DagFactoryYamlParser:
                                 # Regular task dependency
                                 expanded_deps.append(dep)
                         dag_info['task_dependencies'][task_id] = expanded_deps
+                        # Store dependencies on the task dict so _build_assets_and_job_from_dag can find them
+                        task_info['dependencies'] = expanded_deps
 
                 logger.info(f"Parsed dag-factory DAG {dag_id} with {len(dag_info['tasks'])} tasks")
                 dags.append(dag_info)
