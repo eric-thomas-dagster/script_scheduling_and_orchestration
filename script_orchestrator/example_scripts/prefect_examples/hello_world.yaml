@@ -1,7 +1,7 @@
 enabled: true
 script_type: prefect
 description: "Simple Prefect flow with no tasks - testing flow-only pattern"
-group: prefect_migration
+group: prefect_examples
 tags:
   pattern: flow_only
   complexity: simple

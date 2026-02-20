@@ -1,7 +1,7 @@
 enabled: true
 script_type: prefect
 description: "Prefect flow showing existing Prefect code running in Dagster"
-group: prefect_migration
+group: prefect_examples
 owners:
   - data-team@company.com
 tags:

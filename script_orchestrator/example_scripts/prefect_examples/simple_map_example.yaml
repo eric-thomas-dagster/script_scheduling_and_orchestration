@@ -1,7 +1,7 @@
 enabled: true
 script_type: prefect
 description: "Simple Prefect .map() example - demonstrates dynamic parallel execution"
-group: prefect_migration
+group: prefect_examples
 tags:
   pattern: simple_map
   complexity: simple

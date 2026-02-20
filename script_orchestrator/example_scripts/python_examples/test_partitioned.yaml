@@ -1,7 +1,7 @@
 enabled: true
 script_type: python
 description: "Daily data processing script with date partitioning"
-group: test_examples
+group: python_examples
 tags:
   type: test
   demonstrates: partitioned_asset

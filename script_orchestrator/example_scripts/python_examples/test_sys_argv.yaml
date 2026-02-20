@@ -1,7 +1,7 @@
 enabled: true
 script_type: python
 description: "Test script with sys.argv parameters"
-group: test_examples
+group: python_examples
 tags:
   type: test
   demonstrates: sys_argv_config

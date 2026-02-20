@@ -1,7 +1,7 @@
 enabled: true
 script_type: python
 description: "Regional report generator with static region partitions"
-group: test_examples
+group: python_examples
 owners:
   - "team:analytics"
 tags:

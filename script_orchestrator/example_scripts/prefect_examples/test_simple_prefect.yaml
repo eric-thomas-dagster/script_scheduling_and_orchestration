@@ -1,7 +1,7 @@
 enabled: true
 script_type: prefect
 description: "Simple Prefect pipeline for testing graph asset mapping"
-group: test_examples
+group: prefect_examples
 tags:
   type: test
   demonstrates: prefect_graph_mapping
