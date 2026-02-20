@@ -487,17 +487,76 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             ScriptGithubComponent._airflow_db_checked = True  # Don't check again
 
 
+    def _extract_connection_ids_from_dags(self) -> dict:
+        """Extract all connection IDs used in DAG files."""
+        connection_ids = {}  # conn_id -> conn_type
+
+        # Scan all dag-factory YAML files
+        for script_info in self.discovered_scripts:
+            if script_info.script_path.suffix == '.yaml' and script_info.script_path.name != script_info.script_path.stem + '.dagster.yaml':
+                try:
+                    import yaml
+                    with open(script_info.script_path, 'r') as f:
+                        dag_config = yaml.safe_load(f)
+
+                    if not dag_config:
+                        continue
+
+                    # Iterate through all DAGs in the file
+                    for dag_id, dag_def in dag_config.items():
+                        if not isinstance(dag_def, dict) or 'tasks' not in dag_def:
+                            continue
+
+                        # Check each task for connection IDs
+                        for task_id, task_config in dag_def['tasks'].items():
+                            if not isinstance(task_config, dict):
+                                continue
+
+                            # Look for *_conn_id fields
+                            for key, value in task_config.items():
+                                if key.endswith('_conn_id') and isinstance(value, str):
+                                    # Infer connection type from the field name
+                                    conn_type = self._infer_connection_type(key, task_config.get('operator', ''))
+                                    connection_ids[value] = conn_type
+                                    logger.debug(f"Found connection ID: {value} (type: {conn_type})")
+
+                except Exception as e:
+                    logger.debug(f"Could not extract connections from {script_info.script_path}: {e}")
+
+        return connection_ids
+
+    def _infer_connection_type(self, conn_id_field: str, operator: str) -> str:
+        """Infer Airflow connection type from field name or operator."""
+        # Map common patterns to connection types
+        if 'aws' in conn_id_field.lower() or 's3' in operator.lower():
+            return 'aws'
+        elif 'snowflake' in conn_id_field.lower() or 'snowflake' in operator.lower():
+            return 'snowflake'
+        elif 'postgres' in conn_id_field.lower() or 'postgres' in operator.lower():
+            return 'postgres'
+        elif 'mysql' in conn_id_field.lower() or 'mysql' in operator.lower():
+            return 'mysql'
+        elif 'http' in conn_id_field.lower() or 'http' in operator.lower() or 'api' in conn_id_field.lower():
+            return 'http'
+        elif 'gcp' in conn_id_field.lower() or 'google' in operator.lower():
+            return 'google_cloud_platform'
+        elif 'azure' in conn_id_field.lower() or 'azure' in operator.lower():
+            return 'azure'
+        else:
+            return 'generic'  # Fallback
+
     def _create_stub_airflow_connections(self, env: dict):
-        """Create stub Airflow connections for examples that require them."""
-        stub_connections = [
-            ("aws_default", "aws", "Stub AWS connection for examples"),
-            ("snowflake_default", "snowflake", "Stub Snowflake connection for examples"),
-            ("api_server", "http", "Stub HTTP API connection for examples"),
-        ]
+        """Create stub Airflow connections for all connection IDs found in DAGs."""
+        # Discover connection IDs from DAG files
+        connection_ids = self._extract_connection_ids_from_dags()
 
-        logger.info("Creating stub Airflow connections for examples...")
+        if not connection_ids:
+            logger.debug("No connection IDs found in DAG files")
+            return
 
-        for conn_id, conn_type, description in stub_connections:
+        logger.info(f"Creating stub Airflow connections for {len(connection_ids)} discovered connection(s)...")
+
+        for conn_id, conn_type in connection_ids.items():
             try:
                 # Check if connection already exists
                 check_cmd = self._build_airflow_command("connections", "get", conn_id)
@@ -514,13 +573,15 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     logger.debug(f"Connection {conn_id} already exists")
                     continue
 
-                # Create the connection
+                # Create the connection with appropriate defaults
                 add_cmd = self._build_airflow_command(
                     "connections", "add", conn_id,
-                    "--conn-type", conn_type,
-                    "--conn-host", "localhost",
-                    "--conn-port", "8080"
+                    "--conn-type", conn_type
                 )
+
+                # Add default host/port for HTTP connections
+                if conn_type == 'http':
+                    add_cmd.extend(["--conn-host", "localhost", "--conn-port", "8080"])
 
                 result = subprocess.run(
                     add_cmd,
@@ -532,7 +593,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 )
 
                 if result.returncode == 0:
-                    logger.info(f"  ✅ Created stub connection: {conn_id}")
+                    logger.info(f"  ✅ Created stub connection: {conn_id} (type: {conn_type})")
                 else:
                     logger.debug(f"Could not create connection {conn_id}: {result.stderr}")
 
