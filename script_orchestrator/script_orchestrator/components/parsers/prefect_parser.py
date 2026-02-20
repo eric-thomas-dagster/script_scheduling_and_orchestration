@@ -247,12 +247,14 @@ class PrefectParser(BaseParser):
         script_info: Any,
         metadata: Any,
         repo_path: str,
-        dependencies: Optional[List[str]] = None
+        dependencies: Optional[List[str]] = None,
+        asset_prefix: str = "prefect"
     ):
         """Try to create graph asset using module monkey patching.
 
         Args:
             dependencies: List of asset names this flow depends on (for lineage)
+            asset_prefix: Prefix for the asset name (default: "prefect")
         """
         flow_name = flow_info['name']
         flow_params = flow_info.get('parameters', [])
@@ -491,7 +493,7 @@ class PrefectParser(BaseParser):
 
             # Build graph_asset kwargs
             graph_asset_kwargs = {
-                'name': f"script_{script_info.name}",
+                'name': f"{asset_prefix}_{script_info.name}",
                 'group_name': metadata.group_name,
                 'tags': asset_tags,
                 'description': metadata.description or f"Prefect flow (monkey patched): {flow_name}",
@@ -766,12 +768,14 @@ class PrefectParser(BaseParser):
         script_info: Any,
         metadata: Any,
         repo_path: str,
-        dependencies: Optional[List[str]] = None
+        dependencies: Optional[List[str]] = None,
+        asset_prefix: str = "prefect"
     ):
         """Create a graph-backed asset for a Prefect flow.
 
         Args:
             dependencies: List of asset names this flow depends on (for lineage)
+            asset_prefix: Prefix for the asset name (default: "prefect")
         """
         flow_name = flow_info['name']
         task_calls = flow_info['task_calls']
@@ -780,7 +784,7 @@ class PrefectParser(BaseParser):
 
         # Try monkey patch approach first - this works for all flows regardless of complexity!
         monkey_patched_asset = self.try_monkey_patch_approach(
-            flow_info, tasks_info, script_info, metadata, repo_path, dependencies
+            flow_info, tasks_info, script_info, metadata, repo_path, dependencies, asset_prefix
         )
         if monkey_patched_asset is not None:
             return monkey_patched_asset
@@ -948,7 +952,7 @@ class PrefectParser(BaseParser):
 
         # Build graph_asset kwargs
         graph_asset_kwargs = {
-            'name': f"script_{script_info.name}",
+            'name': f"{asset_prefix}_{script_info.name}",
             'group_name': metadata.group_name,
             'tags': asset_tags,
             'description': metadata.description or f"Prefect flow: {flow_name}",

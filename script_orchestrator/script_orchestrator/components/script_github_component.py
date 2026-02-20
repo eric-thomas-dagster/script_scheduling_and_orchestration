@@ -1252,6 +1252,16 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         flow_params = flow_info.get('parameters', [])
         return self._generate_config_class(flow_params, source='prefect')
 
+    def _get_asset_prefix(self, script_type: str) -> str:
+        """Get the asset name prefix based on script type."""
+        prefix_map = {
+            'prefect': 'prefect',
+            'airflow': 'airflow',
+            'python': 'script',
+            'dask': 'script',
+            'spark': 'script',
+        }
+        return prefix_map.get(script_type, 'script')
 
     # ===== Prefect Graph Asset Creation Methods =====
 
@@ -1260,15 +1270,23 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         metadata: ScriptMetadata, repo_path: str
     ):
         """Create a graph-backed asset for a Prefect flow."""
-        # Build dependency AssetKeys (add script_ prefix like regular assets do)
+        # Build dependency AssetKeys (add appropriate prefix)
         deps = []
         if metadata.depends_on:
             for dep_name in metadata.depends_on:
-                deps.append(f"script_{dep_name}")
+                # Look up the dependency to get its script type for the correct prefix
+                dep_script = next((s for s in self.discovered_scripts if s.name == dep_name), None)
+                if dep_script and dep_script.metadata:
+                    prefix = self._get_asset_prefix(dep_script.metadata.script_type)
+                else:
+                    prefix = 'prefect'  # Default to prefect for Prefect flows
+                deps.append(f"{prefix}_{dep_name}")
 
+        asset_prefix = self._get_asset_prefix(metadata.script_type)
         return self.prefect_parser.create_graph_asset(
             flow_info, tasks_info, script_info, metadata, repo_path,
-            dependencies=deps if deps else None
+            dependencies=deps if deps else None,
+            asset_prefix=asset_prefix
         )
 
     def _create_prefect_flow_job(
@@ -3146,8 +3164,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             for dep_name in metadata.depends_on:
                 dep_script = next((s for s in all_scripts if s.name == dep_name), None)
                 if dep_script:
+                    # Get the appropriate prefix based on dependency's script type
+                    dep_prefix = self._get_asset_prefix(dep_script.metadata.script_type if dep_script.metadata else 'python')
                     # Use AssetKey for ordering-only dependencies (no data passing)
-                    deps.append(AssetKey(f"script_{dep_name}"))
+                    deps.append(AssetKey(f"{dep_prefix}_{dep_name}"))
                 else:
                     logger.warning(f"Dependency {dep_name} not found for script {script_info.name}")
         
@@ -3425,8 +3445,9 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         )
 
         # Apply asset decorator
+        asset_prefix = self._get_asset_prefix(metadata.script_type)
         asset_kwargs = {
-            "name": f"script_{script_info.name}",
+            "name": f"{asset_prefix}_{script_info.name}",
             "group_name": metadata.group_name,
             "tags": asset_tags,
             "description": description,
