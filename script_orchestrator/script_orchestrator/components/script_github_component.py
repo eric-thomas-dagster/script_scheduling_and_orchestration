@@ -1328,41 +1328,48 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             metadata.script_type == "prefect" and
             metadata.prefect_mapping and
             metadata.prefect_mapping.enabled):
-            try:
-                tasks, flows = self._parse_prefect_flow(script_info.script_path)
-                if flows:
-                    flow_info = flows[0]
-                    logger.info(f"Prefect mapping config for {script_info.name}: {metadata.prefect_mapping}")
-                    logger.info(f"Prefect mapping mode raw value: {metadata.prefect_mapping.mode}")
-                    mode = metadata.prefect_mapping.mode or "graph_asset"
-                    logger.info(f"Prefect flow {script_info.name} final mode: {mode}")
 
-                    # Route based on mode
-                    if mode == "job":
-                        # Create op job
-                        job_def = self._create_prefect_flow_job(
-                            flow_info, tasks, script_info, metadata, repo_path
-                        )
+            # If the flow has dependencies, use regular @asset (not @graph_asset)
+            # because @graph_asset doesn't support the deps parameter
+            if metadata.depends_on:
+                logger.info(f"Prefect flow {script_info.name} has dependencies - using regular @asset for lineage support")
+                # Fall through to regular asset creation with deps
+            else:
+                try:
+                    tasks, flows = self._parse_prefect_flow(script_info.script_path)
+                    if flows:
+                        flow_info = flows[0]
+                        logger.info(f"Prefect mapping config for {script_info.name}: {metadata.prefect_mapping}")
+                        logger.info(f"Prefect mapping mode raw value: {metadata.prefect_mapping.mode}")
+                        mode = metadata.prefect_mapping.mode or "graph_asset"
+                        logger.info(f"Prefect flow {script_info.name} final mode: {mode}")
 
-                        if job_def:
-                            logger.info(f"Created op job for Prefect flow: {script_info.name}")
-                            return job_def
+                        # Route based on mode
+                        if mode == "job":
+                            # Create op job
+                            job_def = self._create_prefect_flow_job(
+                                flow_info, tasks, script_info, metadata, repo_path
+                            )
+
+                            if job_def:
+                                logger.info(f"Created op job for Prefect flow: {script_info.name}")
+                                return job_def
+                            else:
+                                logger.info(f"Falling back to subprocess for: {script_info.name}")
                         else:
-                            logger.info(f"Falling back to subprocess for: {script_info.name}")
-                    else:
-                        # Create graph asset (default)
-                        graph_asset_def = self._create_prefect_flow_graph_asset(
-                            flow_info, tasks, script_info, metadata, repo_path
-                        )
+                            # Create graph asset (default)
+                            graph_asset_def = self._create_prefect_flow_graph_asset(
+                                flow_info, tasks, script_info, metadata, repo_path
+                            )
 
-                        if graph_asset_def:
-                            logger.info(f"Created graph asset for Prefect flow: {script_info.name}")
-                            return graph_asset_def
-                        else:
-                            logger.info(f"Falling back to subprocess for: {script_info.name}")
-            except Exception as e:
-                logger.warning(f"Failed to create Prefect flow conversion for {script_info.name}: {e}")
-                logger.info(f"Falling back to subprocess execution")
+                            if graph_asset_def:
+                                logger.info(f"Created graph asset for Prefect flow: {script_info.name}")
+                                return graph_asset_def
+                            else:
+                                logger.info(f"Falling back to subprocess for: {script_info.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to create Prefect flow conversion for {script_info.name}: {e}")
+                    logger.info(f"Falling back to subprocess execution")
 
         # Check if this is an Airflow DAG with mapping enabled
         if (self.airflow_enabled and
