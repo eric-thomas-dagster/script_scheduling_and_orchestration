@@ -946,13 +946,22 @@ class PrefectParser(BaseParser):
         exec(func_code, local_vars)
         flow_graph_func = local_vars['flow_graph']
 
+        # Build graph_asset kwargs
+        graph_asset_kwargs = {
+            'name': f"script_{script_info.name}",
+            'group_name': metadata.group_name,
+            'tags': asset_tags,
+            'description': metadata.description or f"Prefect flow: {flow_name}",
+        }
+
+        # Add dependencies if provided (for lineage)
+        if dependencies:
+            from dagster import AssetKey
+            graph_asset_kwargs['deps'] = [AssetKey(dep) for dep in dependencies]
+            logger.info(f"✅ Added dependencies to graph_asset (manual approach): {dependencies}")
+
         # Apply the graph_asset decorator
-        decorated_flow = graph_asset(
-            name=f"script_{script_info.name}",
-            group_name=metadata.group_name,
-            tags=asset_tags,
-            description=metadata.description or f"Prefect flow: {flow_name}",
-        )(flow_graph_func)
+        decorated_flow = graph_asset(**graph_asset_kwargs)(flow_graph_func)
 
         return decorated_flow
 
