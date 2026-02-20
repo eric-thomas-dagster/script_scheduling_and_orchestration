@@ -748,6 +748,13 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             if script_file.name.startswith("_") or script_file.name.startswith("."):
                 continue
 
+            # Skip files in utility directories (include/, tasks/, etc.)
+            # These are typically helper modules, not standalone scripts
+            path_parts = script_file.parts
+            if any(part in ['include', 'utils', 'lib', 'helpers'] for part in path_parts):
+                logger.debug(f"Skipping {script_file.name} - in utility directory")
+                continue
+
             # Look for corresponding YAML file
             yaml_file = script_file.with_suffix(".yaml")
             metadata = None

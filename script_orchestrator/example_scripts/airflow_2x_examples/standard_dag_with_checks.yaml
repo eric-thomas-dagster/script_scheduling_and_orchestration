@@ -1,0 +1,14 @@
+enabled: true
+script_type: airflow
+description: "Airflow 2.x DAG with data quality checks"
+group_name: airflow_examples
+owners:
+  - "team:data_quality"
+tags:
+  category: "airflow"
+  version: "2.x"
+  pattern: "quality_checks"
+kinds:
+  - airflow
+  - python
+  - quality
