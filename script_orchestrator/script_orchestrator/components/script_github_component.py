@@ -3348,9 +3348,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 logger.error(f"Error running DAG Factory asset: {e}")
                 raise
 
-        # Create the partitioned asset
+        # Create the partitioned asset with correct prefix
+        asset_prefix = self._get_asset_prefix(metadata.script_type)
         asset_kwargs = {
-            "name": f"script_{script_info.name}",
+            "name": f"{asset_prefix}_{script_info.name}",
             "partitions_def": partitions_def,
             "group_name": metadata.group_name,
             "tags": asset_tags,
