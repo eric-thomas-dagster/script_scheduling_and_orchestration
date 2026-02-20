@@ -2413,9 +2413,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 asset_tags[f"uses_{resource_name}"] = ""
                 asset_tags[f"resource_type_{resource['resource_type']}"] = ""
 
-            # Get operator type for compute_kind
+            # Add operator type as a kind (in addition to metadata kinds)
             operator_type = task.get('operator_type', 'unknown')
-            compute_kind = operator_type
+            if operator_type and operator_type != 'unknown':
+                asset_tags[f"dagster/kind/{operator_type}"] = ""
 
             # Create the asset function
             def make_asset_func(task_config, yaml_path_param, repo_path_param, dag_id_param, parser):
@@ -2490,7 +2491,6 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
             asset_kwargs = {
                 "name": asset_name,
-                "compute_kind": compute_kind,
                 "group_name": metadata.group_name or "dag_factory",
                 "tags": asset_tags,
                 "description": description,
