@@ -2304,7 +2304,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         # Create the asset
         asset_kwargs = {
             "name": f"script_{script_info.name}",
-            "group_name": metadata.group_name or "dag_factory",
+            "group_name": metadata.group_name or "airflow_examples",
             "tags": asset_tags,
             "description": dag_info.get('description', f"DAG Factory: {dag_id}"),
             "retry_policy": retry_policy,
@@ -2530,7 +2530,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
             asset_kwargs = {
                 "name": asset_name,
-                "group_name": metadata.group_name or "dag_factory",
+                "group_name": metadata.group_name or "airflow_examples",
                 "tags": asset_tags,
                 "description": description,
             }

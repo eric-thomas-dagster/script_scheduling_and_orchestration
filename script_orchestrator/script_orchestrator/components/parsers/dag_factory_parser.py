@@ -657,7 +657,7 @@ class DagFactoryYamlParser:
         logger.info(f"Creating graph asset: {asset_name} for DAG {dag_id} from {script_info.script_path}")
         @graph_asset(
             name=asset_name,
-            group_name=metadata.group_name or "dag_factory",
+            group_name=metadata.group_name or "airflow_examples",
             tags=asset_tags,
             description=dag_info.get('description', f"DAG Factory: {dag_id}"),
         )

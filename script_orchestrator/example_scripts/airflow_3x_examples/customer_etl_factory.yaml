@@ -1,6 +1,6 @@
 enabled: true
 description: "DAG Factory pattern - Multiple customer ETL DAGs as single partitioned asset"
-group: "dag_factory_examples"
+group: "airflow_examples"
 owners:
   - "team:data_engineering"
 tags:
