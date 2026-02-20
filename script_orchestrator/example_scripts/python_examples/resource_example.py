@@ -14,52 +14,75 @@ import requests
 import redis
 
 def main():
-    """Main function demonstrating resource usage."""
+    """Main function demonstrating resource usage (demo mode with graceful failures)."""
+    print("🔍 Resource Example - Demonstrating resource detection")
 
-    # Database operations
-    print("Connecting to PostgreSQL...")
-    conn = psycopg2.connect(
-        host='localhost',
-        port=5432,
-        database='mydb',
-        user='user',
-        password='password'
-    )
+    users = []
+    data = []
 
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users LIMIT 10")
-    users = cursor.fetchall()
-    print(f"Fetched {len(users)} users from database")
+    # Database operations (will fail gracefully if DB not running)
+    print("\nConnecting to PostgreSQL...")
+    try:
+        conn = psycopg2.connect(
+            host='localhost',
+            port=5432,
+            database='mydb',
+            user='user',
+            password='password',
+            connect_timeout=3
+        )
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users LIMIT 10")
+        users = cursor.fetchall()
+        print(f"✅ Fetched {len(users)} users from database")
+        conn.close()
+    except Exception as e:
+        print(f"⚠️  PostgreSQL connection failed (demo mode): {str(e)[:80]}")
+        users = [('user1',), ('user2',), ('user3',)]  # Mock data
+        print(f"   Using mock data: {len(users)} users")
 
-    # S3 operations
-    print("Accessing S3...")
-    s3 = boto3.client('s3',
-        aws_access_key_id='YOUR_KEY',
-        aws_secret_access_key='YOUR_SECRET',
-        region_name='us-east-1'
-    )
-
-    # List buckets
-    response = s3.list_buckets()
-    print(f"Found {len(response['Buckets'])} S3 buckets")
+    # S3 operations (will fail gracefully without credentials)
+    print("\nAccessing S3...")
+    try:
+        s3 = boto3.client('s3',
+            aws_access_key_id='YOUR_KEY',
+            aws_secret_access_key='YOUR_SECRET',
+            region_name='us-east-1'
+        )
+        response = s3.list_buckets()
+        print(f"✅ Found {len(response['Buckets'])} S3 buckets")
+    except Exception as e:
+        print(f"⚠️  S3 connection failed (demo mode): {str(e)[:80]}")
+        print(f"   Would list S3 buckets with valid credentials")
 
     # API calls
-    print("Making HTTP request...")
-    response = requests.get('https://api.example.com/data')
-    data = response.json()
-    print(f"Received {len(data)} items from API")
+    print("\nMaking HTTP request...")
+    try:
+        response = requests.get('https://httpbin.org/json', timeout=5)
+        data = response.json()
+        print(f"✅ Received data from API: {list(data.keys())}")
+    except Exception as e:
+        print(f"⚠️  HTTP request failed (demo mode): {str(e)[:80]}")
+        data = {'items': [1, 2, 3]}  # Mock data
+        print(f"   Using mock data")
 
-    # Cache operations
-    print("Connecting to Redis...")
-    r = redis.Redis(host='localhost', port=6379, password='password')
-    r.set('processed_count', len(users))
-    print(f"Cached result in Redis")
+    # Cache operations (will fail gracefully if Redis not running)
+    print("\nConnecting to Redis...")
+    try:
+        r = redis.Redis(host='localhost', port=6379, password='password', socket_connect_timeout=3)
+        r.set('processed_count', len(users))
+        print(f"✅ Cached result in Redis")
+    except Exception as e:
+        print(f"⚠️  Redis connection failed (demo mode): {str(e)[:80]}")
+        print(f"   Would cache {len(users)} items with Redis running")
 
     # Data quality checks
-    assert len(users) > 0, "No users found in database"
-    assert len(data) > 0, "No data received from API"
+    assert len(users) > 0, "No users found"
+    assert len(data) > 0, "No data received"
 
-    print("✅ Script completed successfully")
+    print("\n✅ Script completed successfully")
+    print(f"   Processed {len(users)} users")
+    print(f"   Resources detected: psycopg2, boto3, requests, redis")
 
 if __name__ == '__main__':
     main()

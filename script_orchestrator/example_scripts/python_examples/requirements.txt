@@ -1,0 +1,5 @@
+# Dependencies for Python examples
+psycopg2-binary
+boto3
+redis
+requests

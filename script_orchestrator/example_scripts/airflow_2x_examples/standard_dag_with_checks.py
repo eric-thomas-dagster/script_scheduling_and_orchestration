@@ -9,7 +9,12 @@ detected and converted to Dagster Asset Checks.
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.common.sql.operators.sql import SQLColumnCheckOperator, SQLTableCheckOperator
-from airflow.operators.python import PythonOperator
+
+# Handle Airflow 2.x vs 3.x operator imports
+try:
+    from airflow.operators.python import PythonOperator  # Airflow 2.x
+except ImportError:
+    from airflow.providers.standard.operators.python import PythonOperator  # Airflow 3.x
 
 # Define the DAG
 default_args = {
@@ -20,13 +25,24 @@ default_args = {
     'retry_delay': timedelta(minutes=5),
 }
 
-with DAG(
-    'data_quality_standard_dag',
-    default_args=default_args,
-    description='Standard DAG with data quality checks',
-    schedule_interval='@daily',
-    catchup=False,
-) as dag:
+# Build DAG kwargs compatible with both Airflow 2.x and 3.x
+dag_kwargs = {
+    'dag_id': 'data_quality_standard_dag',
+    'default_args': default_args,
+    'description': 'Standard DAG with data quality checks',
+    'catchup': False,
+    'tags': ['airflow-version:2.x'],
+}
+
+# Use schedule_interval for Airflow 2.x, schedule for Airflow 3.x
+try:
+    dag = DAG(**dag_kwargs, schedule_interval='@daily')
+except TypeError:
+    # Airflow 3.x doesn't support schedule_interval
+    dag_kwargs['schedule'] = '@daily'
+    dag = DAG(**dag_kwargs)
+
+with dag:
 
     # Extract data task
     def extract_data():

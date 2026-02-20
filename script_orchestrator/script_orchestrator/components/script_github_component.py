@@ -950,10 +950,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             if script_file.name.startswith("_") or script_file.name.startswith("."):
                 continue
 
-            # Skip files in utility directories (include/, tasks/, etc.)
+            # Skip files in utility directories (include/, tasks/, scripts/, etc.)
             # These are typically helper modules, not standalone scripts
             path_parts = script_file.parts
-            if any(part in ['include', 'utils', 'lib', 'helpers'] for part in path_parts):
+            if any(part in ['include', 'utils', 'lib', 'helpers', 'scripts'] for part in path_parts):
                 logger.debug(f"Skipping {script_file.name} - in utility directory")
                 continue
 
@@ -1228,32 +1228,90 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             return []
 
     def _parse_sys_argv_usage(self, script_path: Path):
-        """Parse sys.argv usage patterns from a Python script."""
+        """Parse sys.argv usage patterns from a Python script.
+
+        Attempts to infer parameter names and types from variable assignments like:
+            filename = sys.argv[1]
+            count = int(sys.argv[2])
+        """
         try:
             with open(script_path, 'r') as f:
                 tree = ast.parse(f.read(), filename=str(script_path))
 
-            argv_indices = set()
+            # Map of argv index -> {name, type, help}
+            argv_info = {}
 
+            # First pass: find all sys.argv subscripts and try to infer names from assignments
             for node in ast.walk(tree):
-                if isinstance(node, ast.Subscript):
+                # Look for assignments: var_name = sys.argv[N] or var_name = int(sys.argv[N])
+                if isinstance(node, ast.Assign):
+                    if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                        var_name = node.targets[0].id
+
+                        # Check if RHS is sys.argv[N]
+                        argv_index = None
+                        inferred_type = 'str'
+
+                        if isinstance(node.value, ast.Subscript):
+                            # Direct assignment: var_name = sys.argv[N]
+                            if (isinstance(node.value.value, ast.Attribute) and
+                                isinstance(node.value.value.value, ast.Name) and
+                                node.value.value.value.id == 'sys' and
+                                node.value.value.attr == 'argv' and
+                                isinstance(node.value.slice, ast.Constant)):
+                                argv_index = node.value.slice.value
+
+                        elif isinstance(node.value, ast.Call):
+                            # Type conversion: var_name = int(sys.argv[N])
+                            if isinstance(node.value.func, ast.Name):
+                                type_func = node.value.func.id
+                                if type_func in ('int', 'float', 'bool', 'str'):
+                                    inferred_type = type_func
+
+                                    # Check if argument is sys.argv[N]
+                                    if node.value.args and isinstance(node.value.args[0], ast.Subscript):
+                                        subscript = node.value.args[0]
+                                        if (isinstance(subscript.value, ast.Attribute) and
+                                            isinstance(subscript.value.value, ast.Name) and
+                                            subscript.value.value.id == 'sys' and
+                                            subscript.value.attr == 'argv' and
+                                            isinstance(subscript.slice, ast.Constant)):
+                                            argv_index = subscript.slice.value
+
+                        if argv_index and isinstance(argv_index, int) and argv_index > 0:
+                            argv_info[argv_index] = {
+                                'name': var_name,
+                                'type': inferred_type,
+                                'help': f'{var_name} (from sys.argv[{argv_index}])'
+                            }
+
+                # Also catch standalone sys.argv[N] references not in assignments
+                elif isinstance(node, ast.Subscript):
                     if (isinstance(node.value, ast.Attribute) and
                         isinstance(node.value.value, ast.Name) and
                         node.value.value.id == 'sys' and
-                        node.value.attr == 'argv'):
+                        node.value.attr == 'argv' and
+                        isinstance(node.slice, ast.Constant)):
 
-                        if isinstance(node.slice, ast.Constant):
-                            index = node.slice.value
-                            if isinstance(index, int) and index > 0:
-                                argv_indices.add(index)
+                        index = node.slice.value
+                        if isinstance(index, int) and index > 0:
+                            # Only add generic name if we haven't seen this index yet
+                            if index not in argv_info:
+                                argv_info[index] = {
+                                    'name': f'arg{index}',
+                                    'type': 'str',
+                                    'help': f'Command line argument {index}'
+                                }
 
+            # Build parameter list in order
             parameters = []
-            for index in sorted(argv_indices):
+            for index in sorted(argv_info.keys()):
+                info = argv_info[index]
                 param_info = {
-                    'name': f'arg{index}',
-                    'type_annotation': 'str',
+                    'name': info['name'],
+                    'type_annotation': info['type'],
                     'default': None,
-                    'help': f'Command line argument {index}',
+                    'help': info['help'],
                     'argv_index': index
                 }
                 parameters.append(param_info)
@@ -3440,6 +3498,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         # Add kinds from metadata
         for kind in metadata.kinds:
             asset_tags[f"dagster/kind/{kind}"] = ""
+
+        # Automatically add "python" kind for Python-based script types
+        if script_type in ['python', 'dask', 'spark']:
+            asset_tags[f"dagster/kind/python"] = ""
 
         # Add detected resources as kinds and tags
         resource_kinds = []

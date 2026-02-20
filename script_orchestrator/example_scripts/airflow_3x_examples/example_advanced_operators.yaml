@@ -42,7 +42,7 @@ data_pipeline_with_operators:
 
     # HTTP Operator - trigger downstream system
     notify_completion:
-      operator: airflow.providers.http.operators.http.SimpleHttpOperator
+      operator: airflow.providers.http.operators.http.HttpOperator
       http_conn_id: 'notification_api'
       endpoint: '/api/notifications'
       method: 'POST'
@@ -72,7 +72,7 @@ api_monitoring:
 
     # HTTP Operator - fetch metrics
     fetch_metrics:
-      operator: airflow.providers.http.operators.http.SimpleHttpOperator
+      operator: airflow.providers.http.operators.http.HttpOperator
       http_conn_id: 'api_server'
       endpoint: '/api/metrics'
       method: 'GET'
