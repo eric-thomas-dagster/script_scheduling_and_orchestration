@@ -1,9 +1,0 @@
-enabled: true
-description: "Auto-generated Dagster resources from detected imports"
-group: python_examples
-tags:
-  type: demo
-  demonstrates: resource_detection
-kinds:
-  - python
-  - postgres
