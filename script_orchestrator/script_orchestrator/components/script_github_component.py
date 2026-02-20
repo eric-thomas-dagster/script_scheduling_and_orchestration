@@ -445,6 +445,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 if migrate_result.returncode == 0:
                     # Successfully initialized
                     logger.info("✅ Airflow database initialized successfully")
+
+                    # Create stub connections for examples
+                    self._create_stub_airflow_connections(env)
+
                     ScriptGithubComponent._airflow_db_checked = True
                 else:
                     # Log the actual error
@@ -457,6 +461,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             else:
                 # DB already initialized
                 logger.debug("Airflow database already initialized")
+
+                # Ensure stub connections exist (idempotent)
+                self._create_stub_airflow_connections(env)
+
                 ScriptGithubComponent._airflow_db_checked = True
 
         except (FileNotFoundError, ModuleNotFoundError) as e:
@@ -478,6 +486,58 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             logger.warning(f"⚠️  Could not check Airflow DB: {e}")
             ScriptGithubComponent._airflow_db_checked = True  # Don't check again
 
+
+    def _create_stub_airflow_connections(self, env: dict):
+        """Create stub Airflow connections for examples that require them."""
+        stub_connections = [
+            ("aws_default", "aws", "Stub AWS connection for examples"),
+            ("snowflake_default", "snowflake", "Stub Snowflake connection for examples"),
+            ("api_server", "http", "Stub HTTP API connection for examples"),
+        ]
+
+        logger.info("Creating stub Airflow connections for examples...")
+
+        for conn_id, conn_type, description in stub_connections:
+            try:
+                # Check if connection already exists
+                check_cmd = self._build_airflow_command("connections", "get", conn_id)
+                check_result = subprocess.run(
+                    check_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                    env=env
+                )
+
+                if check_result.returncode == 0:
+                    logger.debug(f"Connection {conn_id} already exists")
+                    continue
+
+                # Create the connection
+                add_cmd = self._build_airflow_command(
+                    "connections", "add", conn_id,
+                    "--conn-type", conn_type,
+                    "--conn-host", "localhost",
+                    "--conn-port", "8080"
+                )
+
+                result = subprocess.run(
+                    add_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                    env=env
+                )
+
+                if result.returncode == 0:
+                    logger.info(f"  ✅ Created stub connection: {conn_id}")
+                else:
+                    logger.debug(f"Could not create connection {conn_id}: {result.stderr}")
+
+            except Exception as e:
+                logger.debug(f"Error creating connection {conn_id}: {e}")
 
     def _detect_airflow_version_in_uv(self) -> Optional[Tuple[int, int]]:
         """Detect Airflow version by running Python in uv environment.
