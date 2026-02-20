@@ -3058,11 +3058,14 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                             context.log.warning(f"Unsupported operator: {operator_type}")
                             return None
                 else:
-                    # No XCom dependencies - standard op
-                    def op_func(context: OpExecutionContext):
-                        """Execute the task."""
+                    # No XCom dependencies - standard op that accepts optional upstream data for structural dependencies
+                    def op_func(context: OpExecutionContext, upstream_data=None):
+                        """Execute the task with optional upstream dependency data."""
                         task_id = task_config['task_id']
                         context.log.info(f"Executing op from DAG {dag_id_param}, task {task_id}")
+
+                        if upstream_data is not None:
+                            context.log.info(f"Op has upstream dependency (structural wiring)")
 
                         operator_type = task_config.get('operator_type')
                         parameters = task_config.get('parameters', {})
@@ -3113,46 +3116,50 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         # Create job that executes ops in order with XCom data passing
         job_name = dag_id
 
-        # Build job function that respects dependencies and passes XCom data
+        # Build job function that respects dependencies and passes data
         task_order = self.dag_factory_parser.get_task_execution_order(dag_info)
+        task_dependencies = dag_info.get('task_dependencies', {})
 
-        def make_job_func(ops_list, task_order, xcom_deps_map):
-            """Create job function with ops in execution order and XCom data passing"""
+        def make_job_func(ops_list, task_order, task_dependencies, xcom_deps_map):
+            """Create job function with proper dependency wiring"""
             def job_func():
-                """Execute ops in dependency order, passing XCom data."""
+                """Execute ops with proper Dagster dependency wiring."""
                 results = {}
                 ops_dict = {task_id: op_def for task_id, op_def, _ in ops_list}
                 xcom_dict = {task_id: xcom_deps for task_id, _, xcom_deps in ops_list}
 
+                # Execute tasks in topological order, wiring up dependencies
                 for task_id in task_order:
-                    if task_id in ops_dict:
-                        op = ops_dict[task_id]
-                        task_xcom_deps = xcom_dict.get(task_id, {})
+                    if task_id not in ops_dict:
+                        continue
 
-                        if task_xcom_deps:
-                            # This op needs XCom inputs from upstream ops
-                            # Build kwargs with results from upstream tasks
-                            xcom_inputs = {}
-                            for param_name, upstream_task_id in task_xcom_deps.items():
-                                if upstream_task_id in results:
-                                    xcom_inputs[param_name] = results[upstream_task_id]
-                                else:
-                                    logger.warning(
-                                        f"XCom dependency not satisfied: {task_id} needs {param_name} "
-                                        f"from {upstream_task_id} but it hasn't run yet"
-                                    )
+                    op = ops_dict[task_id]
+                    deps = task_dependencies.get(task_id, [])
+                    has_xcom = task_id in xcom_dict and xcom_dict[task_id]
 
-                            # Call op with XCom inputs
-                            results[task_id] = op(**xcom_inputs)
-                        else:
-                            # No XCom dependencies - call normally
-                            results[task_id] = op()
+                    if not deps:
+                        # Root task - no dependencies
+                        results[task_id] = op()
+                    elif has_xcom:
+                        # Task has XCom dependencies - pass upstream results
+                        xcom_inputs = {}
+                        for param_name, upstream_task_id in xcom_dict[task_id].items():
+                            if upstream_task_id in results:
+                                xcom_inputs[param_name] = results[upstream_task_id]
+                        results[task_id] = op(**xcom_inputs)
+                    elif len(deps) == 1:
+                        # Single dependency - pass its result directly to create structural dependency
+                        results[task_id] = op(results[deps[0]])
+                    else:
+                        # Multiple dependencies - pass tuple of upstream results
+                        upstream_results = tuple(results[dep] for dep in deps if dep in results)
+                        results[task_id] = op(upstream_results)
 
                 # Don't return results for terminal operation jobs (no outputs needed)
             return job_func
 
-        # Create the job with XCom-aware function
-        job_func = make_job_func(created_ops, task_order, xcom_deps)
+        # Create the job with dependency-aware function
+        job_func = make_job_func(created_ops, task_order, task_dependencies, xcom_deps)
 
         # Build job tags including detected resources
         job_tags = {
