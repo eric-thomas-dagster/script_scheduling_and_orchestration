@@ -24,7 +24,7 @@ data_pipeline_with_operators:
     # Bash Operator - process the file
     process_data:
       operator: airflow.operators.bash.BashOperator
-      bash_command: 'python /opt/airflow/scripts/process_customers.py /tmp/customers.csv'
+      bash_command: 'uv run python example_scripts/airflow_3x_examples/scripts/process_data.py /tmp/customers.csv'
       dependencies: [download_from_s3]
 
     # Snowflake Operator - load to warehouse
