@@ -1,7 +1,7 @@
 enabled: true
 script_type: spark
 description: "Spark job for large-scale data processing (market maker rules)"
-group: distributed_compute
+group: python_examples
 owners:
   - data-eng@company.com
 tags:

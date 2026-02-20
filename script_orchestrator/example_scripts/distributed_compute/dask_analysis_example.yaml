@@ -1,7 +1,7 @@
 enabled: true
 script_type: dask
 description: "Dask analysis for parallel order book processing"
-group: distributed_compute
+group: python_examples
 owners:
   - quant-team@company.com
 tags:
