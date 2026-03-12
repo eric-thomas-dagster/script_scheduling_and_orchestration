@@ -66,3 +66,36 @@ attributes:
   #     enabled: false
   #   my_etl_script:
   #     schedule: "0 6 * * *"
+
+  # ── Airflow connections ───────────────────────────────────────────────────
+  # Credentials for Connection.get("conn_id") calls inside your DAGs.
+  # At startup the component will:
+  #   1. Inject each resolved connection as AIRFLOW_CONN_<ID> into every
+  #      subprocess environment (works even before the DB is ready).
+  #   2. Seed each connection into the per-repo Airflow DB so that
+  #      `airflow connections list` shows real entries.
+  #
+  # Use {{ env:VAR_NAME }} so secrets never live in this file.
+  # If a referenced env var is not set, a warning is logged at startup
+  # telling you exactly which exports are needed.
+  #
+  # connections:
+  #   my_postgres:
+  #     conn_type: postgres
+  #     host: "{{ env:POSTGRES_HOST }}"
+  #     login: "{{ env:POSTGRES_USER }}"
+  #     password: "{{ env:POSTGRES_PASSWORD }}"
+  #     port: 5432
+  #     schema: mydb
+  #   my_s3: "aws://@/?region_name=us-east-1"
+  #   my_slack: "slack://:{{ env:SLACK_TOKEN }}@"
+  connections: {}
+
+  # ── Airflow variables ─────────────────────────────────────────────────────
+  # Values for Variable.get("var_name") calls inside your DAGs.
+  # Injected as AIRFLOW_VAR_<NAME> into every subprocess environment.
+  #
+  # airflow_variables:
+  #   environment: production
+  #   s3_bucket: "{{ env:S3_BUCKET_NAME }}"
+  airflow_variables: {}

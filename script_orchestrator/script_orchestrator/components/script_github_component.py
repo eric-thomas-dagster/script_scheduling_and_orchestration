@@ -258,6 +258,47 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         description="Internal — auto-set to True when dbt_project_path is configured.",
     )
 
+    # ── Airflow connections ───────────────────────────────────────────────────
+    # Credentials for connections referenced in your DAGs (Connection.get("x")).
+    # Use {{ env:VAR_NAME }} so secrets never land in defs.yaml.
+    # Each entry is either a URI string or a structured dict.
+    #
+    # Example:
+    #   connections:
+    #     my_postgres:
+    #       conn_type: postgres
+    #       host: "{{ env:POSTGRES_HOST }}"
+    #       login: "{{ env:POSTGRES_USER }}"
+    #       password: "{{ env:POSTGRES_PASSWORD }}"
+    #       port: 5432
+    #       schema: mydb
+    #     my_s3: "aws://@/?region_name=us-east-1"
+    #     my_slack: "slack://:{{ env:SLACK_TOKEN }}@"
+    connections: Dict[str, Any] = PydanticField(
+        default_factory=dict,
+        description=(
+            "Airflow connections keyed by conn_id. Value is either a URI string "
+            "or a dict with conn_type/host/login/password/port/schema/extra keys. "
+            "Use {{ env:VAR }} to reference environment variables."
+        ),
+    )
+
+    # ── Airflow variables ─────────────────────────────────────────────────────
+    # Inject Airflow variables (Variable.get("my_var")) without a running scheduler.
+    # Use {{ env:VAR_NAME }} to pull values from environment variables.
+    #
+    # Example:
+    #   airflow_variables:
+    #     environment: production
+    #     s3_bucket: "{{ env:S3_BUCKET_NAME }}"
+    airflow_variables: Dict[str, str] = PydanticField(
+        default_factory=dict,
+        description=(
+            "Airflow variables keyed by variable name. "
+            "Use {{ env:VAR }} to reference environment variables."
+        ),
+    )
+
     # Parser instances (initialized in model_post_init)
     prefect_parser: Optional[Any] = None
     airflow_parser: Optional[Any] = None
@@ -482,14 +523,8 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             return
 
         try:
-            # Set up environment with AIRFLOW_HOME
-            env = os.environ.copy()
-            # Use repo directory for Airflow home to isolate from system Airflow
-            airflow_home = Path(repo_path) / ".airflow"
-            airflow_home.mkdir(exist_ok=True)
-            env["AIRFLOW_HOME"] = str(airflow_home)
-            env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
-            env["AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS"] = "False"
+            env = self._make_airflow_env(repo_path)
+            airflow_home = Path(env["AIRFLOW_HOME"])
 
             logger.info(f"Checking Airflow database at AIRFLOW_HOME={airflow_home}")
 
@@ -520,8 +555,9 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     # Successfully initialized
                     logger.info("✅ Airflow database initialized successfully")
 
-                    # Create stub connections for examples
+                    # Create stub connections for examples, then seed user-configured ones
                     self._create_stub_airflow_connections(env)
+                    self._seed_user_connections(env)
 
                     ScriptGithubComponent._airflow_db_checked = True
                 else:
@@ -536,8 +572,9 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 # DB already initialized
                 logger.debug("Airflow database already initialized")
 
-                # Ensure stub connections exist (idempotent)
+                # Ensure stub connections exist, then seed user-configured ones (idempotent)
                 self._create_stub_airflow_connections(env)
+                self._seed_user_connections(env)
 
                 ScriptGithubComponent._airflow_db_checked = True
 
@@ -667,6 +704,40 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             logger.debug("No connection IDs found in DAG files")
             return
 
+        # Warn about any discovered connection that has no credentials configured
+        unconfigured = [cid for cid in connections if cid not in self.connections]
+        if unconfigured:
+            lines = []
+            for cid in unconfigured:
+                conn_type = connections[cid].get("type", "generic")
+                lines.append(f"    {cid}:")
+                lines.append(f"      conn_type: {conn_type}")
+                if conn_type in ("postgres", "mysql", "mssql"):
+                    lines.append(f"      host: \"{{{{ env:{cid.upper()}_HOST }}}}\"")
+                    lines.append(f"      login: \"{{{{ env:{cid.upper()}_USER }}}}\"")
+                    lines.append(f"      password: \"{{{{ env:{cid.upper()}_PASSWORD }}}}\"")
+                    lines.append(f"      port: 5432")
+                elif conn_type == "aws":
+                    lines.append(f"      conn_type: aws")
+                    lines.append(f"      extra:")
+                    lines.append(f"        region_name: \"{{{{ env:AWS_DEFAULT_REGION }}}}\"")
+                elif conn_type == "http":
+                    lines.append(f"      host: \"{{{{ env:{cid.upper()}_HOST }}}}\"")
+                else:
+                    lines.append(f"      # add host/login/password/extra as needed")
+            logger.warning(
+                "Found %d Airflow connection(s) in DAG files with no credentials configured: %s\n"
+                "  These connections have been created as empty stubs — DAGs that use them will\n"
+                "  fail at runtime until you add real credentials.\n\n"
+                "  Add a 'connections' section to your defs.yaml:\n\n"
+                "  connections:\n"
+                "%s\n\n"
+                "  Then set the referenced environment variables before starting Dagster.",
+                len(unconfigured),
+                ", ".join(unconfigured),
+                "\n".join(lines),
+            )
+
         logger.info(f"Creating Airflow connections for {len(connections)} discovered connection(s)...")
 
         for conn_id, conn_info in connections.items():
@@ -754,6 +825,188 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
             except Exception as e:
                 logger.debug(f"Error creating connection {conn_id}: {e}")
+
+    # ── Connection / variable helpers ─────────────────────────────────────────
+
+    def _resolve_env_template(self, value: str, context_desc: str) -> Optional[str]:
+        """Resolve ``{{ env:VAR_NAME }}`` references in *value*.
+
+        Returns the resolved string, or ``None`` if any referenced variable is
+        unset.  Logs a clear warning for every missing variable so the user
+        knows exactly what to export before running their DAGs.
+        """
+        import re
+        missing: List[str] = []
+
+        def _sub(m: "re.Match") -> str:
+            var_name = m.group(1)
+            val = os.environ.get(var_name)
+            if val is None:
+                missing.append(var_name)
+                return ""
+            return val
+
+        resolved = re.sub(r"\{\{\s*env:(\w+)\s*\}\}", _sub, str(value))
+
+        if missing:
+            logger.warning(
+                "Config '%s' references unset environment variable(s): %s\n"
+                "  DAGs that rely on this setting will fail until these are set:\n"
+                "%s",
+                context_desc,
+                ", ".join(missing),
+                "\n".join(f"    export {v}=<value>" for v in missing),
+            )
+            return None
+
+        return resolved
+
+    def _connection_to_uri(self, conn_id: str, config: Any) -> Optional[str]:
+        """Convert a connection config entry to an Airflow URI string.
+
+        Accepts either a pre-formed URI string (with optional ``{{ env:X }}``
+        references) or a structured dict with ``conn_type``, ``host``,
+        ``login``, ``password``, ``port``, ``schema`` / ``database``, and
+        ``extra`` keys.
+        """
+        if isinstance(config, str):
+            return self._resolve_env_template(config, f"connections.{conn_id}")
+
+        if not isinstance(config, dict):
+            logger.warning(
+                "Connection '%s': expected a URI string or a dict, got %s — skipping.",
+                conn_id, type(config).__name__,
+            )
+            return None
+
+        # Resolve {{ env:X }} in every string value
+        resolved: Dict[str, Any] = {}
+        all_ok = True
+        for key, val in config.items():
+            if isinstance(val, str):
+                r = self._resolve_env_template(val, f"connections.{conn_id}.{key}")
+                if r is None:
+                    all_ok = False
+                resolved[key] = r or ""
+            else:
+                resolved[key] = val
+
+        if not all_ok:
+            return None
+
+        conn_type = resolved.get("conn_type", "generic")
+        login     = str(resolved.get("login", "") or "")
+        password  = str(resolved.get("password", "") or "")
+        host      = str(resolved.get("host", "") or "")
+        port      = resolved.get("port", "")
+        schema    = str(resolved.get("schema", "") or resolved.get("database", "") or "")
+        extra     = resolved.get("extra", {})
+
+        from urllib.parse import quote, urlencode
+
+        auth = ""
+        if login or password:
+            auth = f"{quote(login, safe='')}:{quote(password, safe='')}@"
+
+        netloc = f"{host}:{port}" if port else host
+
+        if isinstance(extra, dict):
+            query = urlencode(extra)
+        elif isinstance(extra, str):
+            query = extra
+        else:
+            query = ""
+
+        uri = f"{conn_type}://{auth}{netloc}/{schema}"
+        if query:
+            uri += f"?{query}"
+        return uri
+
+    def _make_airflow_env(self, repo_path: str) -> dict:
+        """Build the subprocess environment dict for every Airflow execution.
+
+        Centralises:
+        - ``AIRFLOW_HOME`` (isolated per-repo)
+        - Standard Airflow config flags
+        - ``AIRFLOW_CONN_*`` injection for all configured connections
+        - ``AIRFLOW_VAR_*`` injection for all configured variables
+
+        Callers should add ``AIRFLOW__CORE__DAGS_FOLDER`` themselves since it
+        differs per DAG execution.
+        """
+        airflow_home = Path(repo_path) / ".airflow"
+        airflow_home.mkdir(exist_ok=True)
+
+        env = os.environ.copy()
+        env["AIRFLOW_HOME"] = str(airflow_home)
+        env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
+        env["AIRFLOW__CORE__LOAD_DEFAULT_CONNECTIONS"] = "False"
+        env["AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT"] = "30"
+
+        # --- inject connections as AIRFLOW_CONN_<ID> env vars ---------------
+        # Airflow checks these before the DB, so they work even on the very
+        # first run before _seed_user_connections has written to the DB.
+        missing_conns: List[str] = []
+        for conn_id, config in self.connections.items():
+            uri = self._connection_to_uri(conn_id, config)
+            if uri is not None:
+                env[f"AIRFLOW_CONN_{conn_id.upper()}"] = uri
+            else:
+                missing_conns.append(conn_id)
+
+        if missing_conns:
+            logger.warning(
+                "Airflow connections with unresolved env vars (DAGs will fail at runtime): %s\n"
+                "  Add the missing exports and restart Dagster.",
+                ", ".join(missing_conns),
+            )
+
+        # --- inject variables as AIRFLOW_VAR_<NAME> env vars ----------------
+        for var_name, var_value in self.airflow_variables.items():
+            resolved = self._resolve_env_template(str(var_value), f"airflow_variables.{var_name}")
+            if resolved is not None:
+                env[f"AIRFLOW_VAR_{var_name.upper()}"] = resolved
+
+        return env
+
+    def _seed_user_connections(self, env: dict) -> None:
+        """Seed user-configured connections into the Airflow DB (idempotent).
+
+        This runs once after ``airflow db migrate`` so that ``airflow
+        connections list`` shows real entries (not just env-var stubs).
+        Connections that already exist are left untouched.
+        """
+        if not self.connections:
+            return
+
+        for conn_id, config in self.connections.items():
+            uri = self._connection_to_uri(conn_id, config)
+            if uri is None:
+                continue  # warning already logged by _resolve_env_template
+
+            # Check whether this connection already exists in the DB
+            check = subprocess.run(
+                self._build_airflow_command("connections", "get", conn_id),
+                capture_output=True, text=True, timeout=10, check=False, env=env,
+            )
+            if check.returncode == 0:
+                logger.debug("Airflow connection '%s' already in DB — skipping seed", conn_id)
+                continue
+
+            add = subprocess.run(
+                self._build_airflow_command(
+                    "connections", "add", conn_id, "--conn-uri", uri
+                ),
+                capture_output=True, text=True, timeout=10, check=False, env=env,
+            )
+            if add.returncode == 0:
+                logger.info("Seeded Airflow connection: %s", conn_id)
+            else:
+                logger.warning(
+                    "Could not seed Airflow connection '%s': %s",
+                    conn_id,
+                    (add.stderr or add.stdout).strip(),
+                )
 
     def _detect_airflow_version_in_uv(self) -> Optional[Tuple[int, int]]:
         """Detect Airflow version by running Python in uv environment.
@@ -1930,11 +2183,9 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     # Use uv run to execute airflow
                     airflow_cmd = self._build_airflow_command("dags", "test", dag_id_param, execution_date)
 
-                    # Set environment
-                    env = os.environ.copy()
-                    env["AIRFLOW_HOME"] = str(Path(repo_path_param) / ".airflow")
+                    # Set environment (connections + variables injected automatically)
+                    env = self._make_airflow_env(repo_path_param)
                     env["AIRFLOW__CORE__DAGS_FOLDER"] = str(script_path_param.parent)
-                    env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
 
                     context.log.info(f"Executing: {' '.join(airflow_cmd)}")
 
@@ -2247,17 +2498,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     # Use uv run to execute airflow with the correct virtual environment
                     airflow_cmd = self._build_airflow_command("dags", "test", dag_id, execution_date)
 
-                    # Set config as environment variables
-                    env = os.environ.copy()
-                    # Set AIRFLOW_HOME to match the initialized database location
-                    env["AIRFLOW_HOME"] = str(Path(repo_path) / ".airflow")
-                    # Tell Airflow where to find DAG files - use the directory containing this specific DAG
+                    # Set environment (connections + variables injected automatically)
+                    env = self._make_airflow_env(repo_path)
                     dag_directory = str(script_info.script_path.parent)
                     env["AIRFLOW__CORE__DAGS_FOLDER"] = dag_directory
-                    # Don't load example DAGs
-                    env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
-                    # Continue even if some DAGs fail to import
-                    env["AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT"] = "30"
                     for param_name, param_value in config.__dict__.items():
                         if param_value is not None:
                             env[f"AIRFLOW_VAR_{param_name.upper()}"] = str(param_value)
@@ -2398,16 +2642,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
                     context.log.info(f"Executing: {' '.join(airflow_cmd)}")
 
-                    # Tell Airflow where to find DAG files - use the directory containing this specific DAG
+                    # Set environment (connections + variables injected automatically)
                     dag_directory = str(script_info.script_path.parent)
-                    env = os.environ.copy()
-                    # Set AIRFLOW_HOME to match the initialized database location
-                    env["AIRFLOW_HOME"] = str(Path(repo_path) / ".airflow")
+                    env = self._make_airflow_env(repo_path)
                     env["AIRFLOW__CORE__DAGS_FOLDER"] = dag_directory
-                    # Don't load example DAGs
-                    env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
-                    # Continue even if some DAGs fail to import
-                    env["AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT"] = "30"
 
                     # Stream output in real-time while capturing for metadata
                     stdout_lines = []
@@ -3401,14 +3639,10 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 # Execute Airflow DAG with partition key as parameter
                 airflow_cmd = self._build_airflow_command("dags", "test", dag_id, execution_date)
 
-                # Set environment including the partition key
-                env = os.environ.copy()
-                # Set AIRFLOW_HOME to match the initialized database location
-                env["AIRFLOW_HOME"] = str(Path(repo_path) / ".airflow")
+                # Set environment (connections + variables injected automatically)
+                env = self._make_airflow_env(repo_path)
                 dag_directory = str(script_info.script_path.parent)
                 env["AIRFLOW__CORE__DAGS_FOLDER"] = dag_directory
-                env["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
-                env["AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT"] = "30"
 
                 # Get partition parameter name
                 partition_param_name = factory_config.partition_key if hasattr(factory_config, 'partition_key') else "partition"
