@@ -80,6 +80,23 @@ except (ImportError, Exception):
 from ..schemas.script_metadata import ScriptMetadata
 
 
+def _imports_cosmos(source: str) -> bool:
+    """Return True if *source* contains an import from the 'cosmos' package."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = getattr(node, "module", "") or ""
+            if module == "cosmos" or module.startswith("cosmos."):
+                return True
+            for alias in getattr(node, "names", []):
+                if alias.name == "cosmos" or alias.name.startswith("cosmos."):
+                    return True
+    return False
+
+
 class NoOpIOManager(ConfigurableIOManager):
     """IO Manager that doesn't persist anything - used for Airflow assets that only yield metadata."""
 
@@ -189,6 +206,58 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         description="Automatically install target prefect_auto_install if not present or mismatched (env: PREFECT_AUTO_INSTALL)"
     )
 
+    # ── dbt / Cosmos ──────────────────────────────────────────────────────
+    # Set dbt_project_path to enable native Cosmos/dbt support.
+    # Any .py file that imports from 'cosmos' will be classified and handled
+    # via dagster-dbt instead of being wrapped as a plain Airflow asset.
+    dbt_project_path: str = PydanticField(
+        default="",
+        description=(
+            "Path to the dbt project inside the repo (e.g. 'dbt/jaffle_shop'). "
+            "Setting this enables native Cosmos/dbt support: files that import "
+            "from 'cosmos' become @dbt_assets jobs instead of Airflow assets."
+        ),
+    )
+    dbt_target: str = PydanticField(
+        default="dev",
+        description="dbt target profile name (must exist in profiles.yml).",
+    )
+    dbt_profiles_dir: str = PydanticField(
+        default="",
+        description="Absolute path to a profiles.yml directory. Leave blank for ~/.dbt",
+    )
+    use_default_cosmos_skip_patterns: bool = PydanticField(
+        default=True,
+        description=(
+            "Apply built-in heuristic skip patterns for Cosmos DAGs "
+            "(kubernetes, virtualenv, watcher, etc.). "
+            "Set to false if your repo filenames contain those substrings legitimately."
+        ),
+    )
+
+    # Per-file overrides — for repos you don't own.
+    # Key = filename stem (no .py), value = dict of override fields.
+    # Supported keys: enabled, cosmos_action, schedule, dbt_select,
+    #                 description, reason.
+    # Example:
+    #   file_overrides:
+    #     basic_cosmos_dag:
+    #       cosmos_action: replace
+    #       schedule: "0 0 * * *"
+    #     jaffle_shop_kubernetes:
+    #       enabled: false
+    file_overrides: Dict[str, Any] = PydanticField(
+        default_factory=dict,
+        description="Per-file configuration overrides keyed by filename stem.",
+    )
+
+    # Internal flag — set automatically when dbt_project_path is configured.
+    # Tells _discover_scripts to leave Cosmos files for _build_cosmos_dbt_defs.
+    skip_cosmos_dags: bool = PydanticField(
+        default=False,
+        description="Internal — auto-set to True when dbt_project_path is configured.",
+    )
+
     # Parser instances (initialized in model_post_init)
     prefect_parser: Optional[Any] = None
     airflow_parser: Optional[Any] = None
@@ -224,6 +293,11 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             self.airflow_version = os.getenv("AIRFLOW_VERSION")
         if self.prefect_version is None and os.getenv("PREFECT_VERSION"):
             self.prefect_version = os.getenv("PREFECT_VERSION")
+
+        # When a dbt project is configured, Cosmos DAGs are handled natively —
+        # skip them in the regular script discovery pass.
+        if self.dbt_project_path:
+            self.skip_cosmos_dags = True
 
         # Log orchestrator configuration
         logger.info(f"Orchestrator config: airflow_enabled={self.airflow_enabled}, "
@@ -880,14 +954,28 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         )
 
         # Add no-op IO manager for Airflow assets that only yield metadata
-        return Definitions(
+        script_defs = Definitions(
             assets=all_assets,
             jobs=all_jobs,
             sensors=all_sensors,
             schedules=all_schedules,
             asset_checks=all_asset_checks if all_asset_checks else None,
-            resources={"airflow_io_manager": NoOpIOManager()}
+            resources={"airflow_io_manager": NoOpIOManager()},
         )
+
+        # If a dbt project is configured, build native Cosmos/dbt definitions
+        # and merge them in.  The repo is already cloned (state.repo_path exists).
+        if self.dbt_project_path and state.repo_path:
+            try:
+                cosmos_defs = self._build_cosmos_dbt_defs(Path(state.repo_path))
+                return Definitions.merge(script_defs, cosmos_defs)
+            except Exception as exc:
+                logger.warning(
+                    "Cosmos/dbt setup failed — returning script definitions only. "
+                    "Error: %s", exc, exc_info=True,
+                )
+
+        return script_defs
 
     def _clone_or_pull_repo(self, clone_dir: Path, github_token: Optional[str]) -> Repo:
         """Clone or pull the GitHub repository."""
@@ -956,6 +1044,21 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             if any(part in ['include', 'utils', 'lib', 'helpers', 'scripts'] for part in path_parts):
                 logger.debug(f"Skipping {script_file.name} - in utility directory")
                 continue
+
+            # Skip Cosmos DAGs when CosmosGithubComponent is also active.
+            # Those files are handled natively via dagster-dbt and should not
+            # be double-processed as plain Airflow assets.
+            if self.skip_cosmos_dags:
+                try:
+                    source = script_file.read_text(encoding="utf-8", errors="ignore")
+                    if _imports_cosmos(source):
+                        logger.info(
+                            "Skipping %s — imports from 'cosmos' (handled by CosmosGithubComponent)",
+                            script_file.name,
+                        )
+                        continue
+                except OSError:
+                    pass
 
             # Look for corresponding YAML file
             yaml_file = script_file.with_suffix(".yaml")
@@ -3151,9 +3254,13 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                         # Single dependency - pass its result directly to create structural dependency
                         results[task_id] = op(results[deps[0]])
                     else:
-                        # Multiple dependencies - pass tuple of upstream results
-                        upstream_results = tuple(results[dep] for dep in deps if dep in results)
-                        results[task_id] = op(upstream_results)
+                        # Multiple dependencies - just pass the first one to establish structural dependency
+                        # (The actual data isn't used since there's no XCom - this is just for graph wiring)
+                        upstream_results = [results[dep] for dep in deps if dep in results]
+                        if upstream_results:
+                            results[task_id] = op(upstream_results[0])
+                        else:
+                            results[task_id] = op()
 
                 # Don't return results for terminal operation jobs (no outputs needed)
             return job_func
@@ -3843,3 +3950,348 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             execution_timezone=schedule_config.timezone,
             default_status=default_status,
         )
+
+
+    # =========================================================================
+    # Cosmos / dbt support
+    # =========================================================================
+    #
+    # When dbt_project_path is set, any .py file that imports from 'cosmos' is
+    # routed here instead of being wrapped as a plain Airflow asset.
+    #
+    # Classification:
+    #   replaced  — DAG just ran dbt via Cosmos; native @dbt_assets is better.
+    #               A Dagster job is created; the Cosmos DAG can be disabled.
+    #   absorbed  — Airflow/Cosmos concept that Dagster handles as a built-in
+    #               (sensor, resource, asset selection). No job needed.
+    #   skipped   — Infrastructure-specific; no Dagster equivalent.
+    # =========================================================================
+
+    def _build_cosmos_dbt_defs(self, repo_dir: Path) -> "Definitions":
+        """Build native @dbt_assets + jobs for all applicable Cosmos DAGs."""
+        try:
+            from dagster_dbt import DbtCliResource, DbtProject, dbt_assets
+            from dagster_dbt import build_schedule_from_dbt_selection, build_dbt_asset_selection
+        except ImportError as exc:
+            raise ImportError(
+                "dagster-dbt is not installed. Add it to your dependencies: "
+                "uv add dagster-dbt dbt-core dbt-<your-adapter>"
+            ) from exc
+
+        dbt_proj_dir = repo_dir / self.dbt_project_path
+        if not dbt_proj_dir.exists():
+            raise FileNotFoundError(
+                f"dbt project not found at {dbt_proj_dir}. "
+                f"Check dbt_project_path in defs.yaml."
+            )
+
+        # --- set up the dbt project ---
+        project_kwargs: dict = {"project_dir": str(dbt_proj_dir)}
+        if self.dbt_target:
+            project_kwargs["target"] = self.dbt_target
+        if self.dbt_profiles_dir:
+            project_kwargs["profiles_dir"] = self.dbt_profiles_dir
+
+        dbt_project = DbtProject(**project_kwargs)
+        dbt_project.prepare_if_dev()
+        dbt_resource = DbtCliResource(project_dir=dbt_project)
+
+        # --- scan and classify Cosmos DAG files ---
+        dags_dir = repo_dir / self.scripts_directory
+        base_url = f"{(self.repo_url or '').rstrip('/')}/blob/{self.repo_branch}/{self.scripts_directory}"
+        records = self._scan_cosmos_dags(dags_dir, base_url)
+
+        replaced = [r for r in records if r["action"] == "replaced"]
+        absorbed = [r for r in records if r["action"] == "absorbed"]
+        skipped  = [r for r in records if r["action"] in ("skipped", "not_cosmos")]
+
+        # --- core @dbt_assets covering all models ---
+        @dbt_assets(manifest=dbt_project.manifest_path, name="dbt_assets")
+        def all_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
+            yield from (
+                dbt.cli(["build"], context=context)
+                .stream()
+                .fetch_row_counts()
+                .fetch_column_metadata()
+            )
+
+        # --- one job (or schedule) per replaced Cosmos DAG ---
+        all_jobs = []
+        all_schedules = []
+
+        for rec in replaced:
+            job_name = f"cosmos__{rec['stem']}"
+            cron = self._normalise_cosmos_schedule(rec["schedule"])
+            dbt_sel = rec["dbt_select"]
+
+            if cron:
+                sched = build_schedule_from_dbt_selection(
+                    [all_dbt_assets],
+                    job_name=job_name,
+                    cron_schedule=cron,
+                    dbt_select=dbt_sel or "*",
+                    tags={"cosmos_source_dag": rec["stem"]},
+                )
+                all_schedules.append(sched)
+            else:
+                sel = (
+                    build_dbt_asset_selection([all_dbt_assets], dbt_select=dbt_sel)
+                    if dbt_sel
+                    else AssetSelection.assets(all_dbt_assets)
+                )
+                job = define_asset_job(
+                    name=job_name,
+                    selection=sel,
+                    description=rec["description"],
+                    tags={"cosmos_source_dag": rec["stem"]},
+                )
+                all_jobs.append(job)
+
+        # --- dbt docs asset (replaces dbt_docs.py Cosmos DAG) ---
+        _dbt_proj_dir = dbt_proj_dir  # closure capture
+
+        @asset(
+            name="dbt_docs",
+            group_name="dbt_documentation",
+            kinds={"dbt"},
+            description=(
+                "Generates dbt HTML documentation. "
+                "Replaces the dbt_docs.py Cosmos DAG. "
+                "Run `dbt docs serve` to browse locally."
+            ),
+        )
+        def dbt_docs_asset(
+            context: AssetExecutionContext, dbt: DbtCliResource
+        ) -> MaterializeResult:
+            yield from dbt.cli(["docs", "generate"], context=context).stream()
+            return MaterializeResult(
+                metadata={
+                    "docs_index": MetadataValue.path(
+                        str(_dbt_proj_dir / "target" / "index.html")
+                    )
+                }
+            )
+
+        # --- migration summary asset ---
+        _replaced_map = {r["stem"]: r["description"] for r in replaced}
+        _absorbed_map = {r["stem"]: r["action_note"]  for r in absorbed}
+        _skipped_map  = {r["stem"]: r["action_note"]  for r in skipped}
+        _total        = len(records)
+
+        @asset(
+            name="cosmos_migration_summary",
+            group_name="cosmos_metadata",
+            description="Materialise to see the full Cosmos → Dagster migration report.",
+            metadata={
+                "replaced":      MetadataValue.int(len(replaced)),
+                "absorbed":      MetadataValue.int(len(absorbed)),
+                "skipped":       MetadataValue.int(len(skipped)),
+                "replaced_dags": MetadataValue.json(_replaced_map),
+                "absorbed_dags": MetadataValue.json(_absorbed_map),
+                "skipped_dags":  MetadataValue.json(_skipped_map),
+            },
+        )
+        def cosmos_migration_summary(context: AssetExecutionContext) -> MaterializeResult:
+            w = 64
+            context.log.info("=" * w)
+            context.log.info("Cosmos → Dagster Migration Report")
+            context.log.info(
+                f"Scanned: {_total}   "
+                f"Replaced: {len(replaced)}   "
+                f"Absorbed: {len(absorbed)}   "
+                f"Skipped: {len(skipped)}"
+            )
+            context.log.info("")
+            context.log.info("REPLACED — Cosmos DAG can be disabled in Airflow")
+            context.log.info("-" * w)
+            for stem, desc in _replaced_map.items():
+                context.log.info(f"  ✓ {stem}  →  job: cosmos__{stem}")
+                context.log.info(f"    {desc}")
+            context.log.info("")
+            context.log.info("ABSORBED — Dagster handles this as a built-in primitive")
+            context.log.info("-" * w)
+            for stem, note in _absorbed_map.items():
+                context.log.info(f"  ⊕ {stem}")
+                context.log.info(f"    {note}")
+            context.log.info("")
+            context.log.info("SKIPPED — Infrastructure-specific, not applicable")
+            context.log.info("-" * w)
+            for stem, note in _skipped_map.items():
+                context.log.info(f"  ✗ {stem}")
+                context.log.info(f"    {note}")
+            context.log.info("=" * w)
+            return MaterializeResult(
+                metadata={
+                    "replaced_dags": MetadataValue.json(_replaced_map),
+                    "absorbed_dags": MetadataValue.json(_absorbed_map),
+                    "skipped_dags":  MetadataValue.json(_skipped_map),
+                }
+            )
+
+        return Definitions(
+            assets=[all_dbt_assets, dbt_docs_asset, cosmos_migration_summary],
+            jobs=all_jobs,
+            schedules=all_schedules,
+            resources={"dbt": dbt_resource},
+        )
+
+    def _scan_cosmos_dags(self, dags_dir: Path, base_url: str) -> List[Dict]:
+        """Scan *dags_dir* for .py files that import from cosmos and classify them."""
+        records: List[Dict] = []
+        if not dags_dir.exists():
+            return records
+        for path in sorted(dags_dir.glob("*.py")):
+            if path.name.startswith("_"):
+                continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if not _imports_cosmos(content):
+                continue
+            rec = self._classify_cosmos_file(path.stem, path.name, content, base_url)
+            records.append(rec)
+        return records
+
+    def _classify_cosmos_file(
+        self, stem: str, filename: str, content: str, base_url: str
+    ) -> Dict:
+        """Return a classification dict for one Cosmos DAG file."""
+        override = self.file_overrides.get(stem, {})
+        source_url = f"{base_url}/{filename}"
+
+        def _make(action: str, note: str = "") -> Dict:
+            return {
+                "stem": stem,
+                "filename": filename,
+                "source_url": source_url,
+                "description": override.get("description") or _docstring_from_source(content),
+                "schedule": override.get("schedule") or _schedule_from_source(content),
+                "dbt_select": override.get("dbt_select") or _select_from_source(content),
+                "action": action,
+                "action_note": note,
+            }
+
+        # file_overrides take highest priority
+        if override.get("enabled") is False:
+            return _make("skipped", override.get("reason", "Disabled via file_overrides"))
+
+        if "cosmos_action" in override:
+            act = override["cosmos_action"]
+            if act == "skip":
+                return _make("skipped", override.get("reason", "Skipped via file_overrides"))
+            if act == "absorbed":
+                return _make("absorbed", override.get("reason", "Absorbed via file_overrides"))
+            return _make("replaced")  # "replace"
+
+        # docs DAG → special asset, not a regular job
+        if stem == "dbt_docs":
+            return _make("replaced")
+
+        # absorbed table
+        if stem in _COSMOS_ABSORBED:
+            return _make("absorbed", _COSMOS_ABSORBED[stem])
+
+        # heuristic skip patterns
+        if self.use_default_cosmos_skip_patterns:
+            for pattern, reason in _COSMOS_SKIP_PATTERNS.items():
+                if pattern in stem:
+                    return _make("skipped", reason)
+
+        return _make("replaced", _COSMOS_REPLACED.get(stem, ("",))[0])
+
+    @staticmethod
+    def _normalise_cosmos_schedule(schedule: Optional[str]) -> Optional[str]:
+        if not schedule:
+            return None
+        return {
+            "@daily":   "0 0 * * *",
+            "@hourly":  "0 * * * *",
+            "@weekly":  "0 0 * * 0",
+            "@monthly": "0 0 1 * *",
+        }.get(schedule, schedule)
+
+
+# ---------------------------------------------------------------------------
+# Cosmos classification tables
+# ---------------------------------------------------------------------------
+
+_COSMOS_REPLACED: Dict[str, tuple] = {
+    "basic_cosmos_dag":                     ("Runs all dbt models — native @dbt_assets is strictly better", None),
+    "basic_cosmos_task_group":              ("Task groups → asset selections in Dagster", None),
+    "basic_cosmos_task_group_different_owners": ("Task groups with per-owner tags", None),
+    "cosmos_seed_dag":                      ("dbt seeds → job scoped to resource_type:seed", "resource_type:seed"),
+    "example_cosmos_dbt_build":             ("Full dbt build with integrated tests", None),
+    "cosmos_manifest_example":              ("Manifest-based — dagster-dbt handles manifests automatically", None),
+    "cosmos_manifest_selectors_example":    ("Selector-filtered DAG", "tag:daily"),
+    "example_cosmos_sources":               ("Source freshness — built into dagster-dbt", None),
+    "example_model_version":                ("Model versioning via manifest", None),
+    "example_duckdb_dag":                   ("DuckDB adapter — swap dbt adapter in pyproject.toml", None),
+}
+
+_COSMOS_ABSORBED: Dict[str, str] = {
+    "cosmos_callback_dag":           "Callbacks → Dagster run-status sensors",
+    "cosmos_profile_mapping":        "Profile config → DbtCliResource",
+    "example_cosmos_python_models":  "Python models supported natively by dagster-dbt",
+    "user_defined_profile":          "Profile lives in DbtCliResource, not a separate DAG",
+    "example_dbt_deps":              "dbt deps runs automatically via DbtProject.prepare_if_dev()",
+    "example_operators":             "Airflow operators → Dagster @asset functions",
+    "example_source_pruning":        "Source pruning → dagster-dbt asset selections",
+    "example_source_rendering":      "Source rendering → dagster-dbt handles automatically",
+    "example_tests_multiple_parents": "Multi-parent tests → dagster-dbt asset checks",
+}
+
+_COSMOS_SKIP_PATTERNS: Dict[str, str] = {
+    "kubernetes":       "Kubernetes execution — infrastructure-specific",
+    "virtualenv":       "Virtualenv task isolation — Airflow-specific",
+    "watcher":          "File-watcher triggers — use a Dagster sensor instead",
+    "performance_dag":  "Cosmos/Airflow benchmarking harness",
+    "task_mapping":     "Airflow dynamic task mapping",
+    "tasks_map":        "Airflow dynamic task mapping",
+    "taskflow":         "TaskFlow API is Airflow-specific",
+    "cross_project":    "Cross-project dbt ls — use separate code locations",
+    "simple_dag_async": "Deferrable/async operators — Airflow-specific",
+}
+
+
+# ---------------------------------------------------------------------------
+# Cosmos AST helpers
+# ---------------------------------------------------------------------------
+
+def _docstring_from_source(source: str) -> str:
+    try:
+        return ast.get_docstring(ast.parse(source)) or ""
+    except SyntaxError:
+        return ""
+
+
+def _schedule_from_source(source: str) -> Optional[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg == "schedule" and isinstance(kw.value, ast.Constant):
+                    return str(kw.value.value)
+    return None
+
+
+def _select_from_source(source: str) -> Optional[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg == "select":
+                    val = kw.value
+                    if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                        return val.value
+                    if isinstance(val, ast.List) and val.elts:
+                        first = val.elts[0]
+                        if isinstance(first, ast.Constant):
+                            return first.value
+    return None

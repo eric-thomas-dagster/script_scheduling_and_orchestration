@@ -1,0 +1,46 @@
+[project]
+name = "dagster_orchestrator"
+version = "0.1.0"
+description = "Template Dagster project — orchestrates any external workflow repo (Python, Prefect, Airflow, Cosmos+dbt)"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+dependencies = [
+    "dagster",
+    "dagster-cloud",
+    "dagster-webserver",
+    "dagster-dg-cli>=1.12.14",
+    # ScriptGithubComponent handles everything — Python, Prefect, Airflow, Cosmos+dbt
+    "script-orchestrator",
+    # dbt support (lazy-imported; only needed when dbt_project_path is set)
+    "dagster-dbt",
+    "dbt-core",
+    "dbt-postgres",
+]
+
+[project.optional-dependencies]
+dev = [
+    "dagster-webserver",
+    "pytest",
+    "dbt-duckdb",   # local dev without a real database
+]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.dg]
+directory_type = "project"
+
+[tool.dg.project]
+root_module = "dagster_orchestrator"
+
+[tool.dagster]
+module_name = "dagster_orchestrator"
+registry_modules = ["dagster_orchestrator.components"]
+
+[tool.setuptools.packages.find]
+exclude = ["dagster_orchestrator_tests"]
+
+# Local path reference — change to PyPI package once published
+[tool.uv.sources]
+script-orchestrator = { path = "../script_orchestrator" }

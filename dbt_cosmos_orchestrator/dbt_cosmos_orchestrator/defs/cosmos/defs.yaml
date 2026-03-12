@@ -1,0 +1,60 @@
+type: dbt_cosmos_orchestrator.components.CosmosGithubComponent
+
+attributes:
+  # ── Repo ──────────────────────────────────────────────────────────────────
+  repo_url: https://github.com/astronomer/astronomer-cosmos
+  branch: main
+
+  # Path inside the repo where the Cosmos DAG .py files live
+  dags_path: dev/dags
+
+  # Path inside the repo to the actual dbt project
+  dbt_project_path: dev/dags/dbt/jaffle_shop
+
+  # ── dbt ───────────────────────────────────────────────────────────────────
+  # dbt target profile (must exist in ~/.dbt/profiles.yml or dbt_profiles_dir)
+  # Use "duckdb" for local dev without a real database — see README for setup.
+  dbt_target: dev
+
+  # Optional: absolute path to a directory containing profiles.yml
+  dbt_profiles_dir: ""
+
+  # Optional: local directory to cache the cloned repo
+  cache_dir: ""
+
+  # Optional: global dbt --exclude expression applied to every job
+  # e.g. "tag:deprecated" to hide work-in-progress models
+  global_dbt_exclude: ""
+
+  # ── DAG filtering ─────────────────────────────────────────────────────────
+  #
+  # How filtering works (applied in order):
+  #
+  #   1. include_only_dags  — if set, ONLY these stems are processed.
+  #                           Everything else is recorded as skipped.
+  #   2. skip_dags          — exact stems to exclude (added on top of, or
+  #                           instead of, the default heuristic patterns).
+  #   3. use_default_skip_patterns — when true (default), the built-in list of
+  #                           Airflow-specific patterns is applied automatically
+  #                           (kubernetes, virtualenv, watcher, task_mapping, …).
+  #                           Set to false if you're pointing at a repo whose
+  #                           filenames happen to contain those substrings.
+  #
+  # Any .py file that passes all filters and imports from 'cosmos' gets a job.
+  # Non-cosmos files are always skipped (they have nothing to convert).
+
+  # Allowlist: leave empty to process all applicable DAGs.
+  include_only_dags: []
+  # include_only_dags:
+  #   - basic_cosmos_dag
+  #   - cosmos_seed_dag
+  #   - dbt_docs
+
+  # Explicit exclusions by filename stem (no .py extension):
+  skip_dags: []
+  # skip_dags:
+  #   - example_cosmos_python_models   # needs Databricks, not relevant here
+  #   - cosmos_profile_mapping         # profile config handled separately
+
+  # Set to false to disable the built-in heuristic patterns:
+  use_default_skip_patterns: true

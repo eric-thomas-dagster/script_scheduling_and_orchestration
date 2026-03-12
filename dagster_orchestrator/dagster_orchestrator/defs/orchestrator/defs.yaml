@@ -1,0 +1,68 @@
+type: script_orchestrator.components.ScriptGithubComponent
+
+attributes:
+  # ── Repo ─────────────────────────────────────────────────────────────────
+  # The single repo to orchestrate.  Can also be set via SCRIPTS_REPO_URL env var.
+  repo_url: https://github.com/astronomer/astronomer-cosmos
+  repo_branch: main
+  github_token: null     # set via GITHUB_TOKEN env var for private repos
+
+  # Path inside the repo that contains DAG / script files
+  scripts_directory: dev/dags
+
+  # Use a local directory instead of cloning (useful during development)
+  use_local: false
+
+  # ── Script types ─────────────────────────────────────────────────────────
+  airflow_enabled: true
+  airflow_version: '3.1'
+  airflow_auto_install: true
+
+  prefect_enabled: true
+  prefect_version: null
+  prefect_auto_install: true
+
+  # ── Cosmos / dbt ─────────────────────────────────────────────────────────
+  # Path to the dbt project inside the repo.
+  # Setting this enables native Cosmos/dbt support:
+  # any .py file that imports from 'cosmos' becomes a @dbt_assets job
+  # instead of being wrapped as a plain Airflow asset.
+  dbt_project_path: dev/dags/dbt/jaffle_shop
+
+  # dbt target profile (must exist in ~/.dbt/profiles.yml or dbt_profiles_dir)
+  # Use "duckdb" for local dev without a real database — see README.
+  dbt_target: dev
+  dbt_profiles_dir: ""
+
+  # Set to false to disable the built-in heuristic Cosmos skip patterns
+  use_default_cosmos_skip_patterns: true
+
+  # ── Per-file overrides ────────────────────────────────────────────────────
+  # Use this for repos you don't own — configure per-file behaviour here
+  # instead of adding companion YAML files to the repo.
+  #
+  # For repos you DO own, you can also drop a <filename>.yaml next to any
+  # script for the same effect (per-file companion YAML).
+  #
+  # Supported keys per entry:
+  #   enabled: false             → skip this file entirely
+  #   cosmos_action: replace     → force replace | absorbed | skip
+  #   schedule: "0 6 * * *"     → override auto-detected schedule
+  #   dbt_select: "tag:daily"   → override auto-detected dbt selector
+  #   description: "..."        → override description
+  #   reason: "..."             → shown in migration summary when skipped
+  #
+  file_overrides: {}
+
+  # Example — uncomment and adjust for your repo:
+  # file_overrides:
+  #   basic_cosmos_dag:
+  #     cosmos_action: replace
+  #     schedule: "@daily"
+  #   example_cosmos_python_models:
+  #     cosmos_action: skip
+  #     reason: "Requires Databricks — not available in this environment"
+  #   jaffle_shop_kubernetes:
+  #     enabled: false
+  #   my_etl_script:
+  #     schedule: "0 6 * * *"
