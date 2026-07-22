@@ -122,19 +122,68 @@ def _imports_prefect_dbt(source: str) -> bool:
     return False
 
 
-def _extract_prefect_dbt_project_dir(source: str) -> Optional[str]:
-    """Scan a Prefect script for `PrefectDbtRunner(project_dir="...")` or
-    `DbtCoreOperation(project_dir="...")` and return the literal project_dir
-    string if found. Returns None if there's no such call (or the arg is
-    non-literal, e.g. built from a variable).
+def _extract_prefect_dbt_paths(source: str) -> Dict[str, Optional[str]]:
+    """Scan a Prefect script for prefect_dbt configuration and return
+    {"project_dir": ..., "profiles_dir": ...} (values None when not found).
 
-    Used to auto-populate `dbt_project_path` when the user hasn't set it
-    globally in defs.yaml.
+    Recognizes the shapes:
+        # Direct kwargs
+        PrefectDbtRunner(project_dir="dbt/jaffle_shop", profiles_dir="…")
+        DbtCoreOperation(project_dir="…")
+
+        # Nested-settings form (Prefect's own docs example)
+        PrefectDbtRunner(settings=PrefectDbtSettings(project_dir="…", profiles_dir="…"))
+
+        # Bare-settings fallback
+        settings = PrefectDbtSettings(project_dir="…")
+
+        # Module-scope constants referenced by name
+        DBT_DIR = "dbt/jaffle_shop"
+        PrefectDbtSettings(project_dir=DBT_DIR)
+
+    Non-literal values (e.g. project_dir=str(some_var)) resolve to None.
     """
+    result: Dict[str, Optional[str]] = {"project_dir": None, "profiles_dir": None}
+
     try:
         tree = ast.parse(source)
     except SyntaxError:
+        return result
+
+    # First pass: collect module-scope Name = "literal" bindings so we can
+    # resolve `project_dir=DBT_DIR` where DBT_DIR is a top-level constant.
+    const_table: Dict[str, str] = {}
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+            continue
+        target = stmt.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        try:
+            val = ast.literal_eval(stmt.value)
+            if isinstance(val, str):
+                const_table[target.id] = val
+        except (ValueError, SyntaxError, TypeError):
+            continue
+
+    def _lit(node: ast.AST) -> Optional[str]:
+        if isinstance(node, ast.Name) and node.id in const_table:
+            return const_table[node.id]
+        try:
+            val = ast.literal_eval(node)
+            if isinstance(val, str):
+                return val
+        except (ValueError, SyntaxError, TypeError):
+            pass
         return None
+
+    def _collect_from_call(call: ast.Call) -> None:
+        for kw in call.keywords:
+            if kw.arg in {"project_dir", "project_dir_path"} and result["project_dir"] is None:
+                result["project_dir"] = _lit(kw.value)
+            elif kw.arg == "profiles_dir" and result["profiles_dir"] is None:
+                result["profiles_dir"] = _lit(kw.value)
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -144,17 +193,19 @@ def _extract_prefect_dbt_project_dir(source: str) -> Optional[str]:
             else f.attr if isinstance(f, ast.Attribute)
             else None
         )
-        if callee not in {"PrefectDbtRunner", "DbtCoreOperation"}:
-            continue
-        for kw in node.keywords:
-            if kw.arg in {"project_dir", "project_dir_path"}:
-                try:
-                    val = ast.literal_eval(kw.value)
-                    if isinstance(val, str):
-                        return val
-                except (ValueError, SyntaxError, TypeError):
-                    return None
-    return None
+        if callee in {"PrefectDbtRunner", "DbtCoreOperation", "PrefectDbtSettings"}:
+            _collect_from_call(node)
+            # Nested form: PrefectDbtRunner(settings=PrefectDbtSettings(...))
+            for kw in node.keywords:
+                if kw.arg == "settings" and isinstance(kw.value, ast.Call):
+                    _collect_from_call(kw.value)
+
+    return result
+
+
+def _extract_prefect_dbt_project_dir(source: str) -> Optional[str]:
+    """Backwards-compat wrapper — returns just the project_dir."""
+    return _extract_prefect_dbt_paths(source)["project_dir"]
 
 
 class NoOpIOManager(ConfigurableIOManager):
@@ -1418,17 +1469,25 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                         )
                         continue
                     if _imports_prefect_dbt(source):
-                        # Auto-adopt the flow's PrefectDbtRunner project_dir if
-                        # the user hasn't configured dbt_project_path globally.
-                        if not self.dbt_project_path:
-                            hint = _extract_prefect_dbt_project_dir(source)
-                            if hint:
-                                self.dbt_project_path = hint
-                                self.skip_cosmos_dags = True
-                                logger.info(
-                                    "Auto-detected dbt_project_path=%s from %s "
-                                    "(PrefectDbtRunner)", hint, script_file.name,
-                                )
+                        # Auto-adopt the flow's PrefectDbtRunner/DbtCoreOperation/
+                        # PrefectDbtSettings paths if the user hasn't configured
+                        # them globally. Handles both the direct-kwarg form and
+                        # the nested `settings=PrefectDbtSettings(...)` form
+                        # used by Prefect's own docs example.
+                        paths = _extract_prefect_dbt_paths(source)
+                        if not self.dbt_project_path and paths.get("project_dir"):
+                            self.dbt_project_path = paths["project_dir"]
+                            self.skip_cosmos_dags = True
+                            logger.info(
+                                "Auto-detected dbt_project_path=%s from %s (prefect_dbt)",
+                                paths["project_dir"], script_file.name,
+                            )
+                        if not self.dbt_profiles_dir and paths.get("profiles_dir"):
+                            self.dbt_profiles_dir = paths["profiles_dir"]
+                            logger.info(
+                                "Auto-detected dbt_profiles_dir=%s from %s (prefect_dbt)",
+                                paths["profiles_dir"], script_file.name,
+                            )
                         if self.dbt_project_path:
                             logger.info(
                                 "Skipping %s — Prefect flow uses prefect_dbt "
