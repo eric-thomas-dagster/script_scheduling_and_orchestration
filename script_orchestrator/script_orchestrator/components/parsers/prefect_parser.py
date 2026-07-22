@@ -10,6 +10,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from dagster import OpExecutionContext, RetryPolicy, graph_asset, op
 
 from .base_parser import BaseParser
+from .prefect_asset_support import (
+    create_materialize_multi_asset,
+    parse_prefect_assets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +152,45 @@ class PrefectParser(BaseParser):
                 pass
 
         return FakePrefectModule()
+
+    def parse_assets(self, script_path: Path) -> Dict[str, Any]:
+        """Parse Prefect script for @materialize-decorated asset declarations.
+
+        Returns {"materialized": [...], "external": [...]}. Empty lists when
+        no @materialize decorators are found. See
+        `prefect_asset_support.parse_prefect_assets` for entry shapes.
+        """
+        return parse_prefect_assets(script_path)
+
+    def create_materialize_multi_asset(
+        self,
+        prefect_assets: Dict[str, Any],
+        flow_info: Dict,
+        script_info: Any,
+        metadata: Any,
+        dbt_project_path: Optional[str] = None,
+        auto_freshness_policies: bool = False,
+    ):
+        """Build a Dagster @multi_asset (+ external upstream AssetSpecs +
+        deployment ScheduleDefinitions).
+
+        Args:
+          dbt_project_path: for @materialize(materialized_by="dbt") assets,
+            path to a dbt project (must contain target/catalog.json +
+            target/manifest.json) — enables column-schema and column-lineage
+            metadata on those assets at build time.
+          auto_freshness_policies: when True, attach a FreshnessPolicy
+            inferred from the asset's cron schedule (from prefect.yaml).
+        """
+        return create_materialize_multi_asset(
+            prefect_assets=prefect_assets,
+            flow_info=flow_info,
+            script_info=script_info,
+            metadata=metadata,
+            fake_prefect_factory=self._create_fake_prefect_module,
+            dbt_project_path=dbt_project_path,
+            auto_freshness_policies=auto_freshness_policies,
+        )
 
     def parse_flow(self, script_path: Path) -> Tuple[List[Dict], List[Dict]]:
         """Parse Prefect file to extract tasks and flow structure using AST."""

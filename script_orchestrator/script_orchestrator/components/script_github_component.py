@@ -205,6 +205,16 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         default=True,
         description="Automatically install target prefect_auto_install if not present or mismatched (env: PREFECT_AUTO_INSTALL)"
     )
+    auto_freshness_policies: bool = PydanticField(
+        default=False,
+        description=(
+            "When true, attach a Dagster FreshnessPolicy to each @materialize "
+            "asset, inferred from its schedule (via adjacent prefect.yaml). "
+            "Interval + 50% grace period becomes maximum_lag_minutes. "
+            "Prefect has no equivalent surface; this lets Dagster's asset "
+            "catalog show freshness SLA status without you writing anything."
+        ),
+    )
 
     # ── dbt / Cosmos ──────────────────────────────────────────────────────
     # Set dbt_project_path to enable native Cosmos/dbt support.
@@ -1159,11 +1169,14 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
             # Handle both single definitions and lists of definitions
             if isinstance(result, list):
-                # Multiple definitions returned (assets, jobs, sensors)
+                # Multiple definitions returned (assets, jobs, sensors, schedules)
                 for item in result:
                     # Classify each definition by type name
                     type_name = type(item).__name__
-                    if 'Job' in type_name:
+                    if 'Schedule' in type_name:
+                        # This is a schedule (Prefect deployment schedule)
+                        all_schedules.append(item)
+                    elif 'Job' in type_name:
                         # This is a job
                         all_jobs.append(item)
                     elif 'Sensor' in type_name:
@@ -1183,6 +1196,21 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 elif 'Sensor' in type_name:
                     all_sensors.append(result)
                 elif 'Asset' in type_name:
+                    # Airflow-only freshness policy attach: for Airflow-sourced
+                    # assets whose DAG has a cron schedule, derive a
+                    # CronFreshnessPolicy from that schedule.  Plain-Python
+                    # scripts intentionally don't get this — we usually don't
+                    # know when their data is "expected" to arrive.
+                    if (
+                        self.auto_freshness_policies
+                        and script_info.metadata
+                        and script_info.metadata.script_type == "airflow"
+                        and script_info.metadata.schedule
+                        and script_info.metadata.schedule.cron_schedule
+                    ):
+                        result = self._attach_freshness_from_schedule(
+                            result, script_info.metadata.schedule
+                        )
                     all_assets.append(result)
 
                     # Create schedule if configured (only for assets)
@@ -1231,7 +1259,12 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         return script_defs
 
     def _clone_or_pull_repo(self, clone_dir: Path, github_token: Optional[str]) -> Repo:
-        """Clone or pull the GitHub repository."""
+        """Clone or pull the GitHub repository (including any submodules).
+
+        Submodules are recursed on both fresh clone and subsequent pulls, so
+        repos like `prefectlabs/demos` whose demo files are symlinks pointing
+        into git submodules resolve to real files on disk.
+        """
         repo_url = self.repo_url
 
         if github_token:
@@ -1242,7 +1275,19 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             repo = Repo(clone_dir)
             repo.remotes.origin.pull(self.repo_branch)
         else:
-            repo = Repo.clone_from(repo_url, clone_dir, branch=self.repo_branch)
+            repo = Repo.clone_from(
+                repo_url,
+                clone_dir,
+                branch=self.repo_branch,
+                multi_options=["--recurse-submodules"],
+            )
+
+        try:
+            # Idempotent: refresh submodules on every clone/pull so branch
+            # changes upstream are picked up.
+            repo.git.submodule("update", "--init", "--recursive")
+        except Exception as e:
+            logger.debug(f"submodule update skipped ({e}); repo may have none")
 
         return repo
 
@@ -1962,6 +2007,46 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             metadata.script_type == "prefect" and
             metadata.prefect_mapping and
             metadata.prefect_mapping.enabled):
+
+            # First: detect any @materialize-decorated assets. If present, emit
+            # a native Dagster multi_asset with one AssetSpec per Prefect URI —
+            # this is the "Prefect asset mapping" path (shallow: static
+            # metadata + asset_deps edges; deep-ish: runtime add_asset_metadata
+            # captured via a shim and yielded as MaterializeResult).
+            try:
+                prefect_assets = self.prefect_parser.parse_assets(script_info.script_path)
+            except Exception as e:
+                logger.debug(f"parse_assets failed for {script_info.name}: {e}")
+                prefect_assets = {"materialized": [], "external": []}
+
+            materialized = prefect_assets.get("materialized", [])
+            externals = prefect_assets.get("external", [])
+            if materialized:
+                try:
+                    tasks, flows = self._parse_prefect_flow(script_info.script_path)
+                    if flows:
+                        logger.info(
+                            f"Prefect flow {script_info.name} has "
+                            f"{len(materialized)} @materialize asset(s) "
+                            f"+ {len(externals)} external upstream(s); "
+                            "creating multi_asset"
+                        )
+                        multi = self.prefect_parser.create_materialize_multi_asset(
+                            prefect_assets, flows[0], script_info, metadata,
+                            dbt_project_path=self.dbt_project_path or None,
+                            auto_freshness_policies=self.auto_freshness_policies,
+                        )
+                        if multi is not None:
+                            return multi
+                        logger.info(
+                            f"multi_asset build returned None for {script_info.name}; "
+                            "falling through to graph_asset path"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"Prefect @materialize multi_asset build failed for "
+                        f"{script_info.name}: {e}"
+                    )
 
             # If the flow has dependencies, use regular @asset (not @graph_asset)
             # because @graph_asset doesn't support the deps parameter
@@ -4176,7 +4261,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         """Build a Dagster schedule from configuration."""
         status_str = schedule_config.default_status.upper()
         default_status = DefaultScheduleStatus.RUNNING if status_str == "RUNNING" else DefaultScheduleStatus.STOPPED
-        
+
         return ScheduleDefinition(
             name=schedule_name,
             target=AssetSelection.keys(asset_name),
@@ -4184,6 +4269,46 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             execution_timezone=schedule_config.timezone,
             default_status=default_status,
         )
+
+    def _attach_freshness_from_schedule(self, asset_def, schedule_config):
+        """Attach a CronFreshnessPolicy to every spec on `asset_def`, derived
+        from the given ScheduleConfig. Used for Airflow-sourced assets where
+        the DAG's cron schedule tells us when data is expected.
+
+        Returns a new AssetsDefinition with the policy baked in (via
+        map_asset_specs). If policy construction fails, returns the input
+        unchanged.
+        """
+        from datetime import timedelta as _timedelta
+        from dagster import FreshnessPolicy
+        from .parsers.prefect_asset_support import _cron_interval_minutes
+
+        cron = schedule_config.cron_schedule
+        interval = _cron_interval_minutes(cron)
+        if not cron or not interval:
+            return asset_def
+
+        try:
+            policy = FreshnessPolicy.cron(
+                deadline_cron=cron,
+                lower_bound_delta=_timedelta(minutes=interval),
+                timezone=schedule_config.timezone or "UTC",
+            )
+        except Exception as e:
+            logger.debug(f"Could not build FreshnessPolicy for cron={cron!r}: {e}")
+            return asset_def
+
+        def _apply(spec):
+            # Don't overwrite an already-configured freshness policy.
+            if spec.freshness_policy is not None:
+                return spec
+            return spec.replace_attributes(freshness_policy=policy)
+
+        try:
+            return asset_def.map_asset_specs(_apply)
+        except Exception as e:
+            logger.debug(f"map_asset_specs failed while attaching freshness: {e}")
+            return asset_def
 
 
     # =========================================================================

@@ -1,0 +1,19 @@
+# Prefect deployment config for demos in this folder.
+# The orchestrator picks these up as Dagster ScheduleDefinitions.
+
+deployments:
+  - name: customer-pipeline-hourly
+    entrypoint: materialize_full_demo.py:customer_pipeline
+    tags: [demos, customer]
+    schedule:
+      cron: "0 * * * *"
+      timezone: UTC
+    description: "Hourly refresh of the customer pipeline."
+
+  - name: customer-pipeline-daily-full
+    entrypoint: materialize_full_demo.py:customer_pipeline
+    tags: [demos, customer, daily]
+    schedule:
+      cron: "0 6 * * *"
+      timezone: UTC
+    description: "Nightly full re-materialization of the customer pipeline."

@@ -1,0 +1,50 @@
+type: script_orchestrator.components.ScriptGithubComponent
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Orchestrate Prefect's own demo repo (https://github.com/PrefectHQ/demos) as
+# Dagster assets.  This exercises the full Prefect → Dagster mapping path:
+#   • plain @flow / @task scripts wrap as graph_assets (like today)
+#   • @materialize scripts (Prefect ≥3.4) surface as multi_assets with real
+#     AssetKeys, dep edges, owners, descriptions, urls, kinds, and runtime
+#     metadata captured from add_asset_metadata() calls
+#
+# The demo repo uses git submodules to source most of its example scripts;
+# ScriptGithubComponent clones with --recurse-submodules so the symlinks
+# resolve to real files.
+# ─────────────────────────────────────────────────────────────────────────────
+
+attributes:
+  repo_url: https://github.com/PrefectHQ/demos
+  repo_branch: main
+  github_token: null       # set via GITHUB_TOKEN for private forks
+  scripts_directory: demos
+  use_local: false
+
+  # ── Script types ─────────────────────────────────────────────────────────
+  # Airflow disabled — this repo is Prefect only.
+  airflow_enabled: false
+
+  prefect_enabled: true
+  # Prefect assets (@materialize / Asset / AssetProperties / add_asset_metadata)
+  # were introduced in Prefect 3.4.  Anything earlier will error on the
+  # `from prefect.assets import ...` line at import time.
+  # Prefect 2.x and 3.x are NOT wire-compatible — pinning to a 3.x floor keeps
+  # the demos runnable and unlocks the asset primitives.
+  prefect_version: ">=3.4"
+  prefect_auto_install: true
+
+  # ── Cosmos / dbt ─────────────────────────────────────────────────────────
+  # Prefect demos don't ship a dbt project, so leave Cosmos routing off.
+  dbt_project_path: ""
+
+  # ── Per-file overrides ────────────────────────────────────────────────────
+  # `demos/*/prefect.yaml` are Prefect deployment configs, not scripts —
+  # skip them so they don't get wrapped as assets.  Add more entries here to
+  # tune schedules or descriptions per demo.
+  file_overrides:
+    prefect:
+      enabled: false
+
+  # ── Airflow connections / variables (unused for Prefect) ─────────────────
+  connections: {}
+  airflow_variables: {}

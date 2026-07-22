@@ -1,48 +1,66 @@
 # Script Orchestrator
 
-A Dagster component that orchestrates existing Python scripts, Airflow DAGs, and Prefect flows - **no code changes required**.
+A Dagster component that orchestrates existing Python scripts, Airflow DAGs, and Prefect flows — **no code changes required**.
 
 ## Why Use This?
 
-**Already doing data engineering in Python, Airflow, or Prefect? Migrate to Dagster without the rewrite.**
+**Already doing data engineering in Python, Airflow, or Prefect? Bring it into Dagster without a rewrite — and get everything Dagster adds on top for free.**
 
 ### Key Benefits
 
-🎯 **No Infrastructure Overhead**
-- ❌ No Prefect Server/Cloud required
-- ❌ No Airflow webserver, scheduler, or Astronomer needed
-- ✅ Just Dagster - one platform for all orchestration
+🎯 **One Platform, All Your Workflows**
+- Prefect flows, Airflow DAGs, dbt projects, and plain Python scripts — orchestrated in the same Dagster deployment, sharing one asset graph.
+- Since Prefect joined Dagster Labs, this project treats Prefect flows as first-class citizens: keep Prefect's execution semantics, gain Dagster's asset model, catalog, and UI on top.
 
-🚀 **Elevate Your Existing Code**
-- **Rich metadata** - Automatic capture of logs, timing, and execution details
-- **Dependencies & lineage** - Visual asset graphs across Python/Airflow/Prefect
-- **Unified observability** - One UI for all your workflows
-- **Better scheduling** - Dagster's asset-based scheduling and partitioning
-- **Data quality** - Asset checks and validation built-in
-
-💰 **Cost & Complexity Reduction**
-- No separate Airflow/Prefect infrastructure to maintain
-- Eliminate Astronomer/Prefect Cloud costs
-- Single deployment, monitoring, and alerting system
-- Reduced operational overhead
+🚀 **Everything Dagster Adds on Top**
+- **Rich metadata** — logs, timing, Prefect artifacts, table schemas, and dbt column info automatically captured.
+- **Cross-tool lineage** — Prefect assets, dbt models, and Airflow datasets connect in one graph via matching asset keys.
+- **Freshness SLAs** — auto-derived from your existing schedules (`prefect.yaml` deployments, Airflow DAG cron); Dagster's UI shows PASS/WARN/FAIL per asset.
+- **AutomationConditions** — `eager()` attached automatically so assets rematerialize when upstreams change.
+- **Backfills, partitions, asset checks** — Dagster features work on top of Prefect/Airflow-defined workflows without changing them.
 
 🛤️ **Practical Migration Path**
-- **Start immediately** - Run existing code as-is in Dagster
-- **Gradual adoption** - Migrate piece-by-piece to native Dagster patterns
-- **No rewrite required** - Keep working code working while you modernize
-- **Proven patterns** - See exactly how Airflow/Prefect maps to Dagster
+- **Start immediately** — run existing Prefect/Airflow code as-is in Dagster.
+- **Gradual adoption** — migrate piece-by-piece to native Dagster patterns.
+- **No rewrite required** — keep working code working while you modernize.
+- **Same scripts, richer output** — Prefect scripts using `@materialize`, `add_asset_metadata`, or `create_markdown_artifact` surface those in Dagster's UI with no changes to user code.
 
 ### How It Works
 
 This component takes a practical approach:
 
-- 🔍 **Parse & Extract** - Automatically reads schedules, parameters, and configuration from Airflow/Prefect
-- 📊 **Capture Metadata** - Logs, execution time, and metadata automatically captured
-- 🎯 **Map to Dagster Primitives** - Tasks become ops where possible for native Dagster execution
-- 🔄 **Intelligent Fallback** - When gaps exist, falls back to in-process execution (subprocess)
-- ⚠️ **Known Limitations** - Some features unsupported (e.g., Airflow HITL, interactive features)
+- 🔍 **Parse & Extract** — automatically reads schedules, parameters, decorators, and `prefect.yaml` deployments from Prefect/Airflow.
+- 📊 **Capture Metadata** — logs, execution time, artifacts, table schemas, and dbt column info automatically captured.
+- 🎯 **Map to Dagster Primitives** — Prefect `@materialize` → Dagster `AssetSpec`; Airflow tasks → ops; dbt via Cosmos → native `@dbt_assets`.
+- 🔄 **Intelligent Fallback** — when gaps exist, falls back to in-process or subprocess execution.
+- ⚠️ **Known Limitations** — some features unsupported (e.g., Airflow HITL, dynamically-constructed Prefect asset URIs).
 
-This approach supports most Airflow and Prefect workflows while providing a clear migration path to native Dagster patterns.
+This approach supports most Prefect and Airflow workflows while providing a clear migration path to native Dagster patterns.
+
+### Prefect flow support
+
+See [`dagster_orchestrator/README.md`](dagster_orchestrator/README.md#prefect-flows-in-dagster)
+for the full mapping table. Highlights of what surfaces from a Prefect flow:
+
+| Prefect | Dagster mapping |
+|---|---|
+| `@materialize("s3://…")` | Native Dagster asset with the URI parsed into a multi-segment `AssetKey` |
+| `Asset(properties=AssetProperties(...))` | Owners, description, url, name on the AssetSpec |
+| `asset_deps=[…]` + subflow chains | Real Dagster `deps=[…]` (explicit + inferred by walking `@flow` bodies, including through nested subflows) |
+| `materialized_by="dbt"` | Adds `dbt` kind + column schema/lineage enrichment from `target/catalog.json` |
+| `@flow(retries=N, tags=[…])`, `@materialize(retries=N, tags=[…])` | RetryPolicy + op tags |
+| `add_asset_metadata({…})` (runtime) | Captured, emitted as typed MaterializeResult metadata |
+| `create_markdown_artifact / create_link_artifact / create_table_artifact` | `MetadataValue.md / .url / .json / .table_schema` |
+| `list[dict]` / DataFrame return values | Column schema + row_count auto-extracted |
+| `prefect.yaml` deployments | Dagster jobs + `ScheduleDefinition`s; opt-in `CronFreshnessPolicy` |
+
+Enable via `defs.yaml`:
+```yaml
+prefect_enabled: true
+prefect_version: ">=3.4"          # @materialize needs Prefect 3.4+
+auto_freshness_policies: true     # opt-in: derive FreshnessPolicy from schedules
+dbt_project_path: dbt/jaffle_shop # optional: enables dbt catalog enrichment
+```
 
 ## Quick Start
 
