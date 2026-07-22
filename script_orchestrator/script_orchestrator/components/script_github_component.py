@@ -122,7 +122,7 @@ def _imports_prefect_dbt(source: str) -> bool:
     return False
 
 
-def _extract_prefect_dbt_paths(source: str) -> Dict[str, Optional[str]]:
+def _extract_prefect_dbt_paths(source: str, script_path: Optional[Path] = None) -> Dict[str, Optional[str]]:
     """Scan a Prefect script for prefect_dbt configuration and return
     {"project_dir": ..., "profiles_dir": ...} (values None when not found).
 
@@ -141,7 +141,15 @@ def _extract_prefect_dbt_paths(source: str) -> Dict[str, Optional[str]]:
         DBT_DIR = "dbt/jaffle_shop"
         PrefectDbtSettings(project_dir=DBT_DIR)
 
-    Non-literal values (e.g. project_dir=str(some_var)) resolve to None.
+        # Common "dynamic" wrappers (statically unwrapped)
+        project_dir=str(Path("dbt/jaffle_shop"))     → "dbt/jaffle_shop"
+        project_dir=Path("dbt/jaffle_shop")          → "dbt/jaffle_shop"
+        project_dir=Path(__file__).parent / "dbt"    → "<script_dir>/dbt" (needs script_path)
+        project_dir=os.getenv("KEY", "dbt/default")  → "dbt/default"
+        project_dir=os.environ.get("KEY", "dbt/x")   → "dbt/x"
+
+    Fully non-literal values (f-strings with runtime vars, function calls) still
+    resolve to None; the extractor never executes code.
     """
     result: Dict[str, Optional[str]] = {"project_dir": None, "profiles_dir": None}
 
@@ -167,14 +175,53 @@ def _extract_prefect_dbt_paths(source: str) -> Dict[str, Optional[str]]:
             continue
 
     def _lit(node: ast.AST) -> Optional[str]:
-        if isinstance(node, ast.Name) and node.id in const_table:
-            return const_table[node.id]
+        """Resolve a node to a literal string, unwrapping common wrappers."""
+        # Direct literal
         try:
             val = ast.literal_eval(node)
             if isinstance(val, str):
                 return val
         except (ValueError, SyntaxError, TypeError):
             pass
+
+        # Name reference to a module-scope constant
+        if isinstance(node, ast.Name):
+            return const_table.get(node.id)
+
+        # Wrapper calls: str(x), Path(x), PurePath(x)
+        if isinstance(node, ast.Call):
+            f = node.func
+            fname = (
+                f.id if isinstance(f, ast.Name)
+                else f.attr if isinstance(f, ast.Attribute)
+                else None
+            )
+
+            if fname in {"str", "Path", "PurePath", "PosixPath", "WindowsPath"}:
+                if node.args:
+                    return _lit(node.args[0])
+                return None
+
+            # os.getenv("KEY", "default"), os.environ.get("KEY", "default")
+            if fname in {"getenv", "get"}:
+                # Second positional arg is the default; first is the key.
+                if len(node.args) >= 2:
+                    return _lit(node.args[1])
+                # kwarg: default=
+                for kw in node.keywords:
+                    if kw.arg == "default":
+                        return _lit(kw.value)
+                return None
+
+        # Path arithmetic: Path(__file__).parent / "dbt"
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            left = _resolve_path_root(node.left, script_path)
+            right = _lit(node.right)
+            if left is not None and right is not None:
+                # Return as a POSIX-style path
+                combined = Path(left) / right
+                return str(combined)
+
         return None
 
     def _collect_from_call(call: ast.Call) -> None:
@@ -203,9 +250,192 @@ def _extract_prefect_dbt_paths(source: str) -> Dict[str, Optional[str]]:
     return result
 
 
+def _resolve_path_root(node: ast.AST, script_path: Optional[Path]) -> Optional[str]:
+    """Resolve the LEFT operand of Path arithmetic to a directory string.
+
+    Handles:
+      Path(__file__)          → parent dir of the script (needs script_path)
+      Path(__file__).parent   → same
+      Path("dbt")             → "dbt"
+    """
+    if script_path is None:
+        return None
+
+    # Path(__file__).parent  or Path(__file__).parent.parent, etc.
+    if isinstance(node, ast.Attribute) and node.attr == "parent":
+        inner = _resolve_path_root(node.value, script_path)
+        if inner is not None:
+            return str(Path(inner).parent)
+        return None
+
+    # Path(__file__)
+    if isinstance(node, ast.Call):
+        f = node.func
+        fname = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else None
+        if fname in {"Path", "PurePath", "PosixPath", "WindowsPath"} and node.args:
+            arg = node.args[0]
+            if isinstance(arg, ast.Name) and arg.id == "__file__":
+                return str(script_path)
+            try:
+                val = ast.literal_eval(arg)
+                if isinstance(val, str):
+                    return val
+            except (ValueError, SyntaxError, TypeError):
+                return None
+
+    return None
+
+
 def _extract_prefect_dbt_project_dir(source: str) -> Optional[str]:
     """Backwards-compat wrapper — returns just the project_dir."""
     return _extract_prefect_dbt_paths(source)["project_dir"]
+
+
+# Callables that are "noise" — they don't count as real work when deciding
+# whether a Prefect flow is a "pure dbt runner" vs. doing meaningful non-dbt
+# things. Print/logging + prefect_dbt setup calls + trivial helpers.
+_PURE_DBT_NOISE_CALLS = frozenset({
+    "PrefectDbtRunner", "PrefectDbtSettings", "DbtCoreOperation",
+    "invoke", "run", "cli",  # runner.invoke(...), runner.run(...)
+    "print", "get_run_logger", "info", "warning", "error", "debug",
+    "log_prints", "tags",
+    "Path", "str", "PurePath",
+    "getenv", "environ", "get",
+})
+
+
+def _is_pure_prefect_dbt_flow(source: str) -> bool:
+    """Return True if EVERY @flow in `source` does nothing but wrap prefect_dbt.
+
+    "Nothing but" means: after stripping docstrings, imports, prints,
+    logging, PrefectDbtRunner/PrefectDbtSettings construction and .invoke()
+    calls, and simple loops over dbt commands — the flow body has zero
+    remaining statements that would count as "real work" (extract, notify,
+    transform, publish, etc.).
+
+    When True, we skip the flow entirely and let auto-discovered
+    @dbt_assets carry the whole story. When False, we KEEP the flow as an
+    opaque asset alongside the fine-grained dbt assets so its non-dbt work
+    doesn't disappear from the graph.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+
+    flows = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and _has_flow_dec(n)
+    ]
+    if not flows:
+        return False
+
+    def _stmt_is_noise(stmt: ast.AST) -> bool:
+        # Docstring / bare literal
+        if isinstance(stmt, ast.Expr):
+            if isinstance(stmt.value, ast.Constant):
+                return True
+            # print(...), runner.invoke(...), get_run_logger().info(...) etc.
+            if isinstance(stmt.value, ast.Call):
+                return _call_is_noise(stmt.value)
+            return False
+        # Assignments where the RHS is a noise call or a literal / Name
+        if isinstance(stmt, ast.Assign):
+            rhs = stmt.value
+            if isinstance(rhs, ast.Constant):
+                return True
+            if isinstance(rhs, ast.Call):
+                return _call_is_noise(rhs)
+            if isinstance(rhs, (ast.Name, ast.Attribute)):
+                return True
+            return False
+        # `for command in [...]: runner.invoke(...)` — loops over dbt commands
+        if isinstance(stmt, ast.For):
+            return all(_stmt_is_noise(s) for s in stmt.body)
+        # if / try — allow only if all inner statements are noise
+        if isinstance(stmt, (ast.If, ast.Try, ast.With, ast.AsyncFor, ast.AsyncWith)):
+            body = list(getattr(stmt, "body", []) or [])
+            body += list(getattr(stmt, "orelse", []) or [])
+            body += list(getattr(stmt, "finalbody", []) or [])
+            body += list(getattr(stmt, "handlers", []) or [])
+            for sub in body:
+                if isinstance(sub, ast.ExceptHandler):
+                    if not all(_stmt_is_noise(s) for s in sub.body):
+                        return False
+                elif not _stmt_is_noise(sub):
+                    return False
+            return True
+        # Pass / Return with no value
+        if isinstance(stmt, (ast.Pass, ast.Break, ast.Continue)):
+            return True
+        if isinstance(stmt, ast.Return):
+            if stmt.value is None:
+                return True
+            return _stmt_is_noise(ast.Expr(value=stmt.value))
+        return False
+
+    def _call_is_noise(call: ast.Call) -> bool:
+        f = call.func
+        name = (
+            f.id if isinstance(f, ast.Name)
+            else f.attr if isinstance(f, ast.Attribute)
+            else None
+        )
+        return name in _PURE_DBT_NOISE_CALLS
+
+    for flow_node in flows:
+        for stmt in flow_node.body:
+            if not _stmt_is_noise(stmt):
+                return False
+    return True
+
+
+def _has_flow_dec(func_node: ast.FunctionDef) -> bool:
+    for dec in func_node.decorator_list:
+        if isinstance(dec, ast.Name) and dec.id == "flow":
+            return True
+        if isinstance(dec, ast.Call):
+            f = dec.func
+            if isinstance(f, ast.Name) and f.id == "flow":
+                return True
+            if isinstance(f, ast.Attribute) and f.attr == "flow":
+                return True
+    return False
+
+
+def _discover_dbt_projects(repo_root: Path) -> List[Path]:
+    """Walk a cloned repo for `dbt_project.yml` files and return the project
+    directories (relative to repo_root, not the yaml files themselves).
+
+    Skips common noise directories (target/, dbt_packages/, .git/, node_modules/,
+    venv/, __pycache__/) so we don't pick up compiled or vendored projects.
+    """
+    if not repo_root or not repo_root.exists():
+        return []
+
+    SKIP_DIRS = {
+        "target", "dbt_packages", ".git", "node_modules",
+        "venv", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache",
+        "site-packages",
+    }
+    projects: List[Path] = []
+
+    def _walk(directory: Path):
+        try:
+            entries = list(directory.iterdir())
+        except OSError:
+            return
+        for entry in entries:
+            if entry.is_file() and entry.name == "dbt_project.yml":
+                projects.append(entry.parent)
+                # Don't descend into a dbt project directory looking for
+                # nested dbt_project.yml — those would be dbt packages.
+                return
+            if entry.is_dir() and entry.name not in SKIP_DIRS:
+                _walk(entry)
+
+    _walk(repo_root)
+    return projects
 
 
 class NoOpIOManager(ConfigurableIOManager):
@@ -1200,6 +1430,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 logger.info(f"Using local scripts from: {scripts_dir}")
 
                 if scripts_dir.exists():
+                    self._repo_root_cache = Path(state.repo_path)
                     state.scripts = self._discover_scripts(scripts_dir)
                     logger.info(f"Discovered {len(state.scripts)} scripts locally")
                 else:
@@ -1226,6 +1457,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
                 scripts_dir = clone_dir / self.scripts_directory
                 if scripts_dir.exists():
+                    self._repo_root_cache = clone_dir
                     state.scripts = self._discover_scripts(scripts_dir)
                     logger.info(f"Discovered {len(state.scripts)} scripts from GitHub")
 
@@ -1469,12 +1701,18 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                         )
                         continue
                     if _imports_prefect_dbt(source):
-                        # Auto-adopt the flow's PrefectDbtRunner/DbtCoreOperation/
-                        # PrefectDbtSettings paths if the user hasn't configured
-                        # them globally. Handles both the direct-kwarg form and
-                        # the nested `settings=PrefectDbtSettings(...)` form
-                        # used by Prefect's own docs example.
-                        paths = _extract_prefect_dbt_paths(source)
+                        # Try harder to pin down the dbt project — three cascading
+                        # strategies, each covering a different real-world shape:
+                        #   1. AST unwrapping of PrefectDbtRunner/PrefectDbtSettings
+                        #      calls in this flow (handles literals, module-scope
+                        #      constants, str()/Path() wrappers, Path arithmetic,
+                        #      and os.getenv defaults).
+                        #   2. Fallback to a repo-wide `dbt_project.yml` scan —
+                        #      if the repo has exactly one dbt project, we use it
+                        #      regardless of what the flow's paths look like.
+                        #   3. Explicit `dbt_project_path` in defs.yaml (already
+                        #      handled above via self.dbt_project_path).
+                        paths = _extract_prefect_dbt_paths(source, script_path=script_file)
                         if not self.dbt_project_path and paths.get("project_dir"):
                             self.dbt_project_path = paths["project_dir"]
                             self.skip_cosmos_dags = True
@@ -1488,17 +1726,51 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                                 "Auto-detected dbt_profiles_dir=%s from %s (prefect_dbt)",
                                 paths["profiles_dir"], script_file.name,
                             )
+
+                        # If we still don't have a path, sweep the repo for
+                        # a `dbt_project.yml`. If exactly one exists, adopt it.
+                        repo_root = getattr(self, "_repo_root_cache", None)
+                        if not self.dbt_project_path and repo_root is not None:
+                            found = _discover_dbt_projects(repo_root)
+                            if len(found) == 1:
+                                rel = found[0].relative_to(repo_root)
+                                self.dbt_project_path = str(rel)
+                                self.skip_cosmos_dags = True
+                                logger.info(
+                                    "Auto-discovered dbt project at %s (single "
+                                    "dbt_project.yml in repo)", rel,
+                                )
+                            elif len(found) > 1:
+                                logger.warning(
+                                    "%s uses prefect_dbt and the repo has %d dbt "
+                                    "projects (%s). Set dbt_project_path in defs.yaml "
+                                    "to disambiguate.",
+                                    script_file.name, len(found),
+                                    ", ".join(str(p.relative_to(repo_root)) for p in found),
+                                )
+
                         if self.dbt_project_path:
-                            logger.info(
-                                "Skipping %s — Prefect flow uses prefect_dbt "
-                                "(dbt models will surface as native @dbt_assets)",
-                                script_file.name,
-                            )
-                            continue
+                            # Now decide: skip the flow entirely (pure dbt runner),
+                            # or keep it as an opaque asset alongside the dbt
+                            # assets (flow does real non-dbt work like extract/notify).
+                            if _is_pure_prefect_dbt_flow(source):
+                                logger.info(
+                                    "Skipping %s — pure prefect_dbt runner "
+                                    "(dbt models will surface as native @dbt_assets)",
+                                    script_file.name,
+                                )
+                                continue
+                            else:
+                                logger.info(
+                                    "%s uses prefect_dbt but also does non-dbt work "
+                                    "— keeping as an opaque asset alongside the "
+                                    "native @dbt_assets.", script_file.name,
+                                )
+                                # Fall through so this file becomes a discovered script.
                         else:
                             logger.warning(
-                                "%s uses prefect_dbt but no dbt_project_path is "
-                                "configured — flow will be wrapped as a single "
+                                "%s uses prefect_dbt but no dbt_project_path could "
+                                "be resolved — flow will be wrapped as a single "
                                 "opaque asset. Set dbt_project_path in defs.yaml "
                                 "to expand dbt models into first-class assets.",
                                 script_file.name,
