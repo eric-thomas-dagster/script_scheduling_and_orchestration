@@ -97,6 +97,66 @@ def _imports_cosmos(source: str) -> bool:
     return False
 
 
+def _imports_prefect_dbt(source: str) -> bool:
+    """Return True if *source* uses the `prefect_dbt` collection.
+
+    Prefect flows that run dbt via `prefect_dbt` (PrefectDbtRunner,
+    DbtCoreOperation, etc.) get routed to native dagster-dbt @dbt_assets
+    the same way Cosmos DAGs do — one Dagster asset per dbt model with
+    full lineage, column info, and test-based asset checks. Without this,
+    a Prefect flow that calls `dbt run` would show up as a single opaque
+    Dagster asset with no visibility into its models.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module = getattr(node, "module", "") or ""
+            if module == "prefect_dbt" or module.startswith("prefect_dbt."):
+                return True
+            for alias in getattr(node, "names", []):
+                if alias.name == "prefect_dbt" or alias.name.startswith("prefect_dbt."):
+                    return True
+    return False
+
+
+def _extract_prefect_dbt_project_dir(source: str) -> Optional[str]:
+    """Scan a Prefect script for `PrefectDbtRunner(project_dir="...")` or
+    `DbtCoreOperation(project_dir="...")` and return the literal project_dir
+    string if found. Returns None if there's no such call (or the arg is
+    non-literal, e.g. built from a variable).
+
+    Used to auto-populate `dbt_project_path` when the user hasn't set it
+    globally in defs.yaml.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        callee = (
+            f.id if isinstance(f, ast.Name)
+            else f.attr if isinstance(f, ast.Attribute)
+            else None
+        )
+        if callee not in {"PrefectDbtRunner", "DbtCoreOperation"}:
+            continue
+        for kw in node.keywords:
+            if kw.arg in {"project_dir", "project_dir_path"}:
+                try:
+                    val = ast.literal_eval(kw.value)
+                    if isinstance(val, str):
+                        return val
+                except (ValueError, SyntaxError, TypeError):
+                    return None
+    return None
+
+
 class NoOpIOManager(ConfigurableIOManager):
     """IO Manager that doesn't persist anything - used for Airflow assets that only yield metadata."""
 
@@ -1343,18 +1403,47 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 logger.debug(f"Skipping {script_file.name} - in utility directory")
                 continue
 
-            # Skip Cosmos DAGs when CosmosGithubComponent is also active.
-            # Those files are handled natively via dagster-dbt and should not
-            # be double-processed as plain Airflow assets.
+            # Skip files handled natively via dagster-dbt:
+            #   - Cosmos DAGs (import cosmos)  → routed via _build_cosmos_dbt_defs
+            #   - Prefect flows that call dbt through prefect_dbt → same treatment,
+            #     since Prefect wraps the whole dbt project as one opaque task
+            #     while Dagster gives you one asset per model with full lineage.
             if self.skip_cosmos_dags:
                 try:
                     source = script_file.read_text(encoding="utf-8", errors="ignore")
                     if _imports_cosmos(source):
                         logger.info(
-                            "Skipping %s — imports from 'cosmos' (handled by CosmosGithubComponent)",
+                            "Skipping %s — imports from 'cosmos' (handled natively via dagster-dbt)",
                             script_file.name,
                         )
                         continue
+                    if _imports_prefect_dbt(source):
+                        # Auto-adopt the flow's PrefectDbtRunner project_dir if
+                        # the user hasn't configured dbt_project_path globally.
+                        if not self.dbt_project_path:
+                            hint = _extract_prefect_dbt_project_dir(source)
+                            if hint:
+                                self.dbt_project_path = hint
+                                self.skip_cosmos_dags = True
+                                logger.info(
+                                    "Auto-detected dbt_project_path=%s from %s "
+                                    "(PrefectDbtRunner)", hint, script_file.name,
+                                )
+                        if self.dbt_project_path:
+                            logger.info(
+                                "Skipping %s — Prefect flow uses prefect_dbt "
+                                "(dbt models will surface as native @dbt_assets)",
+                                script_file.name,
+                            )
+                            continue
+                        else:
+                            logger.warning(
+                                "%s uses prefect_dbt but no dbt_project_path is "
+                                "configured — flow will be wrapped as a single "
+                                "opaque asset. Set dbt_project_path in defs.yaml "
+                                "to expand dbt models into first-class assets.",
+                                script_file.name,
+                            )
                 except OSError:
                     pass
 

@@ -44,6 +44,7 @@ across dbt / Airflow / everything else in the same code location.
 - **Freshness policies** auto-derived from the deployment schedule (opt-in via `auto_freshness_policies: true`) — Dagster's UI shows PASS/WARN/FAIL freshness state per asset, backed by the same cron the flow already ships with.
 - **External upstream assets** — any `Asset(...)` binding referenced only in `asset_deps=[…]` gets a metadata-only `AssetSpec` (owners, description, url) so the platform team's postgres table appears in the graph with its full metadata even though no flow in your repo produces it.
 - **dbt column schema + lineage** — for `materialized_by="dbt"` assets, columns from `target/catalog.json` land on the spec at build time and column-to-parent-table lineage shows up in Dagster's UI.
+- **`prefect-dbt` → native `@dbt_assets`** — Prefect flows that run dbt via `PrefectDbtRunner` (which in Prefect wrap the entire dbt project as one opaque task) get expanded into one Dagster asset per model, with model-to-model lineage from `manifest.json`, column info from `catalog.json`, and dbt tests as asset checks. The `project_dir=` is auto-detected from `PrefectDbtRunner(project_dir="…")` calls if `dbt_project_path` isn't set globally.
 - **Unified lineage** across Prefect + dbt + Airflow + plain Python in one graph.
 
 ### Configuring the Prefect path
