@@ -60,25 +60,65 @@ dbt_project_path: dbt/jaffle_shop # optional: enables dbt catalog enrichment
 See [`defs/prefect_demos/`](dagster_orchestrator/defs/prefect_demos/defs.yaml)
 for a live example pointed at `github.com/PrefectHQ/demos`.
 
-## Validated against real code
+### Validated against real code (Prefect)
 
-This project ships pre-configured against two external, real-world repos to
-prove the mapping isn't demoware:
+The Prefect mapping is exercised against both local demos we ship AND
+Prefect's own external demo repo:
 
-- **`defs/prefect_demos/`** → [github.com/PrefectHQ/demos](https://github.com/PrefectHQ/demos)
-  — Prefect's own sales-engineering demo repo. Cloned with
-  `--recurse-submodules` so its symlinked demo files resolve.
-  Covers hello-world, artifacts (weather), async subflows (pokemon-weight),
-  crypto-prices with multi-deployment schedules, and retries.
+**In this project** — five `@materialize` demos plus plain-flow examples in
+[`script_orchestrator/example_scripts/prefect_examples/`](../script_orchestrator/example_scripts/prefect_examples/):
+- `materialize_assets_demo.py` — basic `@materialize` with `Asset` + `AssetProperties`
+- `materialize_implicit_deps_demo.py` — implicit dep inference through subflow calls
+- `materialize_full_demo.py` — artifacts, subflows, concurrency, freshness policies
+- `materialize_partitioned_demo.py` — partition-based backfills + `assert` → asset checks
+- `dbt_via_prefect_demo.py` — `prefect_dbt` flow → native `@dbt_assets`
 
-- **`defs/orchestrator/`** → [github.com/astronomer/astronomer-cosmos](https://github.com/astronomer/astronomer-cosmos)
-  `dev/dags/` — Astronomer's canonical Cosmos + Airflow DAG set. Cosmos
-  DAGs get replaced with native `@dbt_assets` (one Dagster asset per dbt
-  model, with lineage, column info, and dbt tests as asset checks).
+**External** — [`defs/prefect_demos/`](dagster_orchestrator/defs/prefect_demos/defs.yaml)
+is wired to [github.com/PrefectHQ/demos](https://github.com/PrefectHQ/demos)
+(Prefect's own sales-engineering demos, cloned with `--recurse-submodules`
+so submodule-symlinked files resolve). Covers hello-world, artifacts
+(weather), async subflows (pokemon-weight), crypto-prices with
+multi-deployment schedules, and retries.
 
-Fork either repo or point the orchestrator at your own via `repo_url:` in
-`defs.yaml` and the same treatment applies to your flows and DAGs — no
-upstream code changes.
+If Prefect updates its demos, we pull the new versions on the next clone.
+Point `repo_url:` at your own Prefect repo and the same mapping applies
+with no upstream code changes.
+
+## Airflow + Cosmos in Dagster
+
+Airflow DAGs get parsed and mapped to Dagster ops/assets by the same
+`ScriptGithubComponent`. When a DAG imports `cosmos` and a dbt project is
+configured (or auto-discovered), that whole DAG gets replaced with native
+`@dbt_assets` — one Dagster asset per dbt model, with model-to-model
+lineage from `manifest.json`, column info from `catalog.json`, and dbt
+tests as asset checks. See `## Cosmos DAG outcomes` below for the
+per-DAG classification.
+
+### Validated against real code (Airflow + Cosmos)
+
+Same story on the Airflow side — local Airflow DAGs plus Astronomer's
+canonical Cosmos DAG set:
+
+**In this project** — six Airflow 3.x DAG patterns in
+[`script_orchestrator/example_scripts/airflow_3x_examples/`](../script_orchestrator/example_scripts/airflow_3x_examples/):
+- `simple_etl_3x.py` — linear extract → transform → load
+- `data_pipeline_3x.py` — branching task graph
+- `report_generator_3x.py` — dataset producer
+- `report_from_processed_data_3x.py` — dataset consumer (producer/consumer lineage)
+- `multi_input_report_3x.py` — multiple inlet datasets
+- `customer_etl_factory.py` — DAG factory pattern → Dagster partitioned asset
+
+Plus Airflow 2.x + dag-factory YAML examples in
+[`airflow_2x_examples/`](../script_orchestrator/example_scripts/airflow_2x_examples/).
+
+**External** — [`defs/orchestrator/`](dagster_orchestrator/defs/orchestrator/defs.yaml)
+is wired to [github.com/astronomer/astronomer-cosmos](https://github.com/astronomer/astronomer-cosmos)'s
+`dev/dags/` folder — Astronomer's canonical Cosmos + Airflow DAG set.
+Cosmos DAGs that just run dbt get replaced with native `@dbt_assets`;
+non-Cosmos DAGs are mapped as regular Airflow assets.
+
+Point `repo_url:` at your own DAG repo and the same treatment applies
+with no upstream code changes.
 
 ## Architecture
 
