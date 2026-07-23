@@ -62,6 +62,61 @@ auto_freshness_policies: true     # opt-in: derive FreshnessPolicy from schedule
 dbt_project_path: dbt/jaffle_shop # optional: enables dbt catalog enrichment
 ```
 
+## Validated Against Real Code
+
+The mapping isn't demoware. This project points at *real, external* Prefect
+and Airflow repos and turns their flows/DAGs into first-class Dagster assets
+with zero code changes on the upstream side. That means:
+
+- If you fork the upstream repo you can reproduce every screenshot yourself.
+- If Prefect / Astronomer update their examples, we pull the new versions.
+- The parser exercises the same corner cases real users hit.
+
+### Prefect
+
+**[dagster_orchestrator/defs/prefect_demos/](dagster_orchestrator/dagster_orchestrator/defs/prefect_demos/defs.yaml)**
+is wired to Prefect's own sales-engineering demo repo,
+[github.com/PrefectHQ/demos](https://github.com/PrefectHQ/demos) — cloned
+with `--recurse-submodules` so its symlinked example files resolve. Flows
+covered include:
+
+| Prefect demo | What it exercises |
+|---|---|
+| `demos/hello_world/01_hello_world.py` | Basic `@flow` mapping |
+| `demos/artifacts/weather.py` | `create_markdown_artifact` → `MetadataValue.md` |
+| `demos/async_subflows/pokemon_weight.py` | Nested `@flow` calls with dep inference |
+| `demos/crypto_prices/schedule_specific_parameters.py` | Multi-deployment schedules with per-deployment parameters |
+| `demos/retries/04_retries.py` | `@task(retries=…)` → `RetryPolicy` |
+
+Plus [our own Prefect asset demos](script_orchestrator/example_scripts/prefect_examples/):
+[materialize_assets_demo.py](script_orchestrator/example_scripts/prefect_examples/materialize_assets_demo.py) (basic `@materialize`),
+[materialize_implicit_deps_demo.py](script_orchestrator/example_scripts/prefect_examples/materialize_implicit_deps_demo.py) (implicit dep inference through subflows),
+[materialize_full_demo.py](script_orchestrator/example_scripts/prefect_examples/materialize_full_demo.py) (artifacts, subflows, concurrency, freshness),
+[materialize_partitioned_demo.py](script_orchestrator/example_scripts/prefect_examples/materialize_partitioned_demo.py) (partition-based backfills + asset checks from `assert`),
+[dbt_via_prefect_demo.py](script_orchestrator/example_scripts/prefect_examples/dbt_via_prefect_demo.py) (`prefect_dbt` → native `@dbt_assets`).
+
+### Airflow + Cosmos
+
+**[dagster_orchestrator/defs/orchestrator/](dagster_orchestrator/dagster_orchestrator/defs/orchestrator/defs.yaml)**
+is wired to
+[github.com/astronomer/astronomer-cosmos](https://github.com/astronomer/astronomer-cosmos)'s
+`dev/dags/` folder — the canonical set of Cosmos + Airflow DAGs Astronomer
+ships as their reference. When a DAG calls Cosmos to run dbt, the whole DAG
+gets replaced with native `@dbt_assets` (one Dagster asset per dbt model,
+with lineage, column info, and dbt tests as asset checks).
+
+Plus [six Airflow 3.x DAG patterns of our own](script_orchestrator/example_scripts/airflow_3x_examples/):
+[simple_etl_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/simple_etl_3x.py),
+[data_pipeline_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/data_pipeline_3x.py),
+[report_generator_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/report_generator_3x.py),
+[report_from_processed_data_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/report_from_processed_data_3x.py),
+[multi_input_report_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/multi_input_report_3x.py),
+[customer_etl_factory.py](script_orchestrator/example_scripts/airflow_3x_examples/customer_etl_factory.py)
+(DAG factory pattern → Dagster partitioned asset).
+
+Point the orchestrator at your own repo (`repo_url:` in `defs.yaml`) and
+the same mapping applies to your Prefect flows and Airflow DAGs.
+
 ## Quick Start
 
 ```bash

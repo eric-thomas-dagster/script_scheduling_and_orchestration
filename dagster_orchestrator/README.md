@@ -60,6 +60,26 @@ dbt_project_path: dbt/jaffle_shop # optional: enables dbt catalog enrichment
 See [`defs/prefect_demos/`](dagster_orchestrator/defs/prefect_demos/defs.yaml)
 for a live example pointed at `github.com/PrefectHQ/demos`.
 
+## Validated against real code
+
+This project ships pre-configured against two external, real-world repos to
+prove the mapping isn't demoware:
+
+- **`defs/prefect_demos/`** → [github.com/PrefectHQ/demos](https://github.com/PrefectHQ/demos)
+  — Prefect's own sales-engineering demo repo. Cloned with
+  `--recurse-submodules` so its symlinked demo files resolve.
+  Covers hello-world, artifacts (weather), async subflows (pokemon-weight),
+  crypto-prices with multi-deployment schedules, and retries.
+
+- **`defs/orchestrator/`** → [github.com/astronomer/astronomer-cosmos](https://github.com/astronomer/astronomer-cosmos)
+  `dev/dags/` — Astronomer's canonical Cosmos + Airflow DAG set. Cosmos
+  DAGs get replaced with native `@dbt_assets` (one Dagster asset per dbt
+  model, with lineage, column info, and dbt tests as asset checks).
+
+Fork either repo or point the orchestrator at your own via `repo_url:` in
+`defs.yaml` and the same treatment applies to your flows and DAGs — no
+upstream code changes.
+
 ## Architecture
 
 `ScriptGithubComponent` (from `script-orchestrator`) is the single component used here:
