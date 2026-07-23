@@ -62,6 +62,41 @@ auto_freshness_policies: true     # opt-in: derive FreshnessPolicy from schedule
 dbt_project_path: dbt/jaffle_shop # optional: enables dbt catalog enrichment
 ```
 
+## When NOT to use this
+
+This project's real value is **preserving existing Prefect / Airflow / plain
+Python code while gaining Dagster's asset model on top**. It's a migration
+bridge, not a permanent architecture. Skip it if:
+
+- **You're writing new code.** For greenfield pipelines, write native
+  Dagster `@asset`s directly. Native code performs better, debugs more
+  cleanly, and has no translation layer to maintain. This project's ROI
+  comes from *not* rewriting code that already works.
+
+- **You plan to keep Prefect Cloud / Airflow scheduler as the primary
+  orchestrator.** Running two schedulers over the same flows means two
+  run histories, two log destinations, and confusion about which is
+  authoritative. Pick one — either commit to Dagster as the executor
+  (this project), or stay on your existing stack and skip Dagster
+  entirely.
+
+- **Your flows lean on features that don't survive the translation.**
+  Prefect Cloud automations, webhooks, notifications, and HITL tasks;
+  Airflow's interactive UI features (task-instance clearing with
+  modified params, backfill UI, HITL sensors); highly Airflow-specific
+  operators. These lose fidelity when mapped — use the native tool.
+
+- **You're already on Dagster and comfortable there.** For critical
+  paths, rewriting your Prefect/Airflow code as native `@asset`s unlocks
+  Dagster's real strengths (partitioning, IO managers, native retries,
+  ops as first-class citizens). The wrapping layer is here to buy time,
+  not to be the destination.
+
+**Quick decision guide:** if you have working Prefect/Airflow code and
+want Dagster's asset graph, catalog, freshness SLAs, and unified
+lineage over it — use this. If you're building new or fully committed to
+Dagster long-term — go native and skip the bridge.
+
 ## Quick Start
 
 ```bash

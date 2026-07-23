@@ -14,6 +14,27 @@ One Dagster project. One component. One `defs.yaml`. Handles everything.
 
 All from a single `defs.yaml` pointing at one repo.
 
+## When NOT to use this
+
+This is a **migration bridge**, not a permanent architecture. Skip it if:
+
+- **You're writing new code.** Write native Dagster `@asset`s directly —
+  no translation layer to maintain, no subprocess overhead for the
+  fallback paths, and full access to Dagster's partitioning / IO manager /
+  native retry primitives.
+- **You plan to keep Prefect Cloud or Airflow as your primary scheduler.**
+  Running two schedulers over the same flows just means two run
+  histories and confusion about which is authoritative. Pick one.
+- **Your flows rely on features that don't cleanly translate** — Prefect
+  Cloud automations, HITL sensors, Airflow's interactive UI operations.
+  These lose fidelity when mapped; use the native tool.
+- **You're already comfortable on Dagster.** For critical paths, rewriting
+  the wrapped code as native assets is the better long-term investment.
+
+Use this when you have *existing* Prefect flows or Airflow DAGs and want
+Dagster's asset graph over them without a rewrite — that's where the
+value is.
+
 ## Prefect flows in Dagster
 
 Since Prefect joined Dagster Labs, this project treats Prefect flows as
