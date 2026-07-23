@@ -808,6 +808,25 @@ def _build_deployment_config_class(
     return cls
 
 
+def _cron_hour_minute(cron: str) -> Tuple[Optional[int], Optional[int]]:
+    """Extract (hour, minute) from a cron string when they're literal digits.
+
+    Used to hand `hour_of_day` / `minute_of_hour` to
+    `build_schedule_from_partitioned_job` so a schedule tick fires at the
+    right moment within its partition. Returns (None, None) if either field
+    isn't a plain integer (e.g. `*`, `*/5`, `1,15,30`).
+    """
+    if not cron or not isinstance(cron, str):
+        return (None, None)
+    parts = cron.split()
+    if len(parts) != 5:
+        return (None, None)
+    minute_str, hour_str = parts[0], parts[1]
+    minute = int(minute_str) if minute_str.isdigit() else None
+    hour = int(hour_str) if hour_str.isdigit() else None
+    return (hour, minute)
+
+
 def _cron_interval_minutes(cron: str) -> Optional[int]:
     """Best-effort cron→interval-in-minutes estimator (no external deps).
 
@@ -1454,6 +1473,7 @@ def create_materialize_multi_asset(
         TableColumn,
         TableSchema,
         WeeklyPartitionsDefinition,
+        build_schedule_from_partitioned_job,
         define_asset_job,
         multi_asset,
     )
@@ -1987,6 +2007,19 @@ def create_materialize_multi_asset(
         asset_keys = [AssetKey(pa["asset_key_path"]) for pa in materialized]
         selection = AssetSelection.assets(*asset_keys)
         multi_asset_op_name = f"prefect_materialize_{script_name}"
+
+        # If the multi_asset is partitioned, figure out its cadence so we can
+        # detect schedule/partition matches vs. mismatches per deployment.
+        partition_cadence_minutes: Optional[int] = None
+        if partitions_def is not None:
+            pd_type = type(partitions_def).__name__
+            partition_cadence_minutes = {
+                "HourlyPartitionsDefinition": 60,
+                "DailyPartitionsDefinition": 1440,
+                "WeeklyPartitionsDefinition": 10080,
+                "MonthlyPartitionsDefinition": 43200,
+            }.get(pd_type)
+
         for i, dep in enumerate(deployments):
             sched = dep.get("schedule")
             if not sched or not sched.get("cron"):
@@ -1994,10 +2027,8 @@ def create_materialize_multi_asset(
             base = f"prefect_{script_name}"
             job_name = f"{base}_deployment_{i}" if len(deployments) > 1 else f"{base}_deployment"
             sched_name = f"{job_name}_schedule"
+            dep_params = dep.get("parameters") or {}
 
-            # Bake the deployment's parameters as Dagster run_config so ad-hoc
-            # runs of this job / this schedule use the deployment's values —
-            # matching Prefect's "each deployment has its own params" model.
             job_kwargs: Dict[str, Any] = {
                 "name": job_name,
                 "selection": selection,
@@ -2007,10 +2038,7 @@ def create_materialize_multi_asset(
                     **{f"prefect_tag/{t}": "" for t in dep.get("tags") or []},
                 },
             }
-            dep_params = dep.get("parameters") or {}
             if dep_params and deployment_config_class is not None:
-                # Only include params that are declared on the config class
-                # (i.e. present in at least one deployment's parameter set).
                 cfg_field_names = set(deployment_config_class.model_fields.keys())
                 op_config = {k: v for k, v in dep_params.items() if k in cfg_field_names}
                 if op_config:
@@ -2018,16 +2046,57 @@ def create_materialize_multi_asset(
                         "ops": {multi_asset_op_name: {"config": op_config}}
                     }
             job_def = define_asset_job(**job_kwargs)
-            schedules.append(ScheduleDefinition(
-                name=sched_name,
-                cron_schedule=sched["cron"],
-                execution_timezone=sched.get("timezone", "UTC"),
-                job=job_def,
-                description=(
-                    f"From prefect.yaml deployment '{dep.get('name')}' "
-                    f"(cron: {sched['cron']}, tz: {sched.get('timezone', 'UTC')})"
-                    + (f" — params: {dep_params}" if dep_params else "")
-                ),
-            ))
+
+            # ── Schedule kind depends on partition/schedule alignment ────────
+            dep_cadence = _cron_interval_minutes(sched["cron"])
+            description = (
+                f"From prefect.yaml deployment '{dep.get('name')}' "
+                f"(cron: {sched['cron']}, tz: {sched.get('timezone', 'UTC')})"
+                + (f" — params: {dep_params}" if dep_params else "")
+            )
+
+            if partition_cadence_minutes is not None and dep_cadence == partition_cadence_minutes:
+                # Cadence matches partition cadence → use the partition-aware
+                # schedule builder. On each tick it auto-materializes the
+                # just-completed partition (yesterday's data for a daily
+                # schedule at 6am, etc.), so scheduled runs Just Work without
+                # anyone having to pick a partition key manually.
+                #
+                # Dagster derives the base cron from the partition definition
+                # itself for time-partitioned jobs — we can only tune the
+                # exact hour/minute within the partition via hour_of_day /
+                # minute_of_hour. `execution_timezone` and `cron_schedule`
+                # can't be passed here (partition_def owns them). If a user's
+                # deployment declared a non-UTC timezone, we'd need a matching
+                # PartitionsDefinition(..., timezone=...) — future work.
+                hour, minute = _cron_hour_minute(sched["cron"])
+                sched_kwargs: Dict[str, Any] = {
+                    "job": job_def,
+                    "name": sched_name,
+                    "description": description,
+                }
+                if minute is not None:
+                    sched_kwargs["minute_of_hour"] = minute
+                if hour is not None and partition_cadence_minutes >= 1440:
+                    sched_kwargs["hour_of_day"] = hour
+                schedules.append(build_schedule_from_partitioned_job(**sched_kwargs))
+            else:
+                if partition_cadence_minutes is not None and dep_cadence != partition_cadence_minutes:
+                    logger.warning(
+                        "Schedule for deployment '%s' (cron %s, %s min) doesn't "
+                        "match partition cadence (%s min) for %s. Emitting a "
+                        "non-partitioned ScheduleDefinition — scheduled runs "
+                        "will NOT auto-target a partition; use the Dagster UI's "
+                        "backfill to fill partitioned runs instead.",
+                        dep.get("name"), sched["cron"], dep_cadence,
+                        partition_cadence_minutes, script_name,
+                    )
+                schedules.append(ScheduleDefinition(
+                    name=sched_name,
+                    cron_schedule=sched["cron"],
+                    execution_timezone=sched.get("timezone", "UTC"),
+                    job=job_def,
+                    description=description,
+                ))
 
     return [_prefect_multi_asset, *external_specs, *schedules]
