@@ -102,6 +102,10 @@ example_scripts/
 - ✅ **Asset Checks** - SQL checks map to Dagster asset checks
 - ✅ **dag-factory YAML** - YAML-based DAG definitions parsed and converted
 - ✅ **Metadata & Logs** - Execution logs and timing automatically captured
+- ✅ **Partition-based backfills** - DAGs using `{{ ds }}` / `execution_date` /
+  `data_interval_start` context params auto-detect as partitioned assets;
+  the partition key gets passed as `execution_date` at run time. Drag-select
+  to backfill 30 days in the Dagster UI — no custom scripts.
 
 **Execution Strategy:**
 1. **Native Dagster Mapping** (preferred):
@@ -171,13 +175,14 @@ def customer_etl(context):
 The Airflow mapping isn't demoware — it's exercised against both real DAGs
 we ship in this repo AND external upstream repos.
 
-**In this repo** ([`script_orchestrator/example_scripts/airflow_3x_examples/`](script_orchestrator/example_scripts/airflow_3x_examples/)) — six Airflow 3.x DAG patterns of our own:
+**In this repo** ([`script_orchestrator/example_scripts/airflow_3x_examples/`](script_orchestrator/example_scripts/airflow_3x_examples/)) — Airflow 3.x DAG patterns of our own:
 - [simple_etl_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/simple_etl_3x.py) — linear extract → transform → load
 - [data_pipeline_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/data_pipeline_3x.py) — branching task graph
 - [report_generator_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/report_generator_3x.py) — dataset producer
 - [report_from_processed_data_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/report_from_processed_data_3x.py) — dataset consumer (producer/consumer lineage)
 - [multi_input_report_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/multi_input_report_3x.py) — multiple inlet datasets
 - [customer_etl_factory.py](script_orchestrator/example_scripts/airflow_3x_examples/customer_etl_factory.py) — DAG factory pattern → Dagster partitioned asset
+- [partitioned_daily_etl_3x.py](script_orchestrator/example_scripts/airflow_3x_examples/partitioned_daily_etl_3x.py) — `{{ ds }}` / `data_interval_start` context params → auto-detected as `DailyPartitionsDefinition` with drag-select backfills
 
 Plus Airflow 2.x examples with dag-factory YAML support in [`airflow_2x_examples/`](script_orchestrator/example_scripts/airflow_2x_examples/).
 

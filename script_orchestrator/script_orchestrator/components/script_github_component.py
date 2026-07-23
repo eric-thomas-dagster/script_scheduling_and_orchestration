@@ -80,6 +80,68 @@ except (ImportError, Exception):
 from ..schemas.script_metadata import ScriptMetadata
 
 
+_AIRFLOW_DATE_JINJA_TOKENS = (
+    "{{ ds ", "{{ds ", "{{ ds}}", "{{ds}}",
+    "{{ execution_date", "{{execution_date",
+    "{{ logical_date", "{{logical_date",
+    "{{ data_interval_start", "{{data_interval_start",
+    "{{ data_interval_end", "{{data_interval_end",
+    "{{ ts ", "{{ts ", "{{ ts}}", "{{ts}}",
+    "{{ next_ds", "{{next_ds",
+    "{{ prev_ds", "{{prev_ds",
+)
+_AIRFLOW_DATE_CONTEXT_PARAMS = frozenset({
+    "ds", "execution_date", "logical_date",
+    "data_interval_start", "data_interval_end",
+    "ts", "next_ds", "prev_ds",
+})
+
+
+def _has_partitions(asset_def) -> bool:
+    """True if any spec on `asset_def` carries a PartitionsDefinition."""
+    try:
+        for spec in asset_def.specs:
+            if spec.partitions_def is not None:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _detect_airflow_date_params(source: str) -> bool:
+    """Return True if an Airflow DAG source uses date-like context params.
+
+    Two signals, either is sufficient:
+      1. Jinja templates like `{{ ds }}`, `{{ execution_date }}`,
+         `{{ data_interval_start }}` in operator args or Python strings.
+      2. Task functions (Airflow TaskFlow API) that declare `ds` /
+         `execution_date` / `data_interval_start` etc. as parameters —
+         Airflow injects these from the runtime context.
+
+    When True + the DAG has a periodic cron schedule, we generate a
+    matching PartitionsDefinition so backfills work drag-select in the
+    Dagster UI (something Airflow requires custom scripts to do).
+    """
+    if not source:
+        return False
+    # (1) Jinja tokens — cheap substring scan
+    for token in _AIRFLOW_DATE_JINJA_TOKENS:
+        if token in source:
+            return True
+    # (2) task function signatures using context param names
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for arg in node.args.args:
+            if arg.arg in _AIRFLOW_DATE_CONTEXT_PARAMS:
+                return True
+    return False
+
+
 def _imports_cosmos(source: str) -> bool:
     """Return True if *source* contains an import from the 'cosmos' package."""
     try:
@@ -1539,21 +1601,34 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 elif 'Sensor' in type_name:
                     all_sensors.append(result)
                 elif 'Asset' in type_name:
-                    # Airflow-only freshness policy attach: for Airflow-sourced
-                    # assets whose DAG has a cron schedule, derive a
-                    # CronFreshnessPolicy from that schedule.  Plain-Python
-                    # scripts intentionally don't get this — we usually don't
-                    # know when their data is "expected" to arrive.
+                    # Airflow-only enrichment. Two independent transforms —
+                    # partitions first (so any downstream logic that inspects
+                    # spec.partitions_def sees the right thing), then freshness.
+                    #
+                    # Partitions kick in when the DAG uses date-like context
+                    # params (`{{ ds }}`, `execution_date`, `data_interval_start`,
+                    # …) AND has a periodic cron schedule. Result: the same
+                    # DAG code Airflow runs on a schedule becomes drag-select-
+                    # backfillable in Dagster's UI.
+                    #
+                    # Freshness policies mirror the DAG's cron cadence so the
+                    # asset catalog shows PASS/WARN/FAIL per asset. Plain
+                    # Python scripts intentionally skip both — we usually
+                    # don't know when their data is "expected" to arrive.
                     if (
-                        self.auto_freshness_policies
-                        and script_info.metadata
+                        script_info.metadata
                         and script_info.metadata.script_type == "airflow"
                         and script_info.metadata.schedule
                         and script_info.metadata.schedule.cron_schedule
                     ):
-                        result = self._attach_freshness_from_schedule(
-                            result, script_info.metadata.schedule
-                        )
+                        if self._airflow_uses_date_params(script_info):
+                            result = self._attach_partitions_from_schedule(
+                                result, script_info.metadata.schedule
+                            )
+                        if self.auto_freshness_policies:
+                            result = self._attach_freshness_from_schedule(
+                                result, script_info.metadata.schedule
+                            )
                     all_assets.append(result)
 
                     # Create schedule if configured (only for assets)
@@ -1562,10 +1637,18 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                         # This handles cases where the asset name differs from script name (e.g., Airflow DAGs with datasets)
                         actual_asset_key = result.key.to_user_string()
 
-                        schedule = self._build_schedule(
+                        # Use build_schedule_from_partitioned_job when the
+                        # asset became partitioned above and the cron cadence
+                        # matches the partition definition — otherwise the
+                        # scheduled tick would fire without a partition key
+                        # and Dagster would refuse to run.
+                        schedule = self._build_schedule_smart(
                             f"{actual_asset_key}_schedule",
                             script_info.metadata.schedule,
                             actual_asset_key,
+                            partitioned_asset_def=(
+                                result if _has_partitions(result) else None
+                            ),
                         )
                         all_schedules.append(schedule)
                 else:
@@ -2683,7 +2766,14 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 try:
                     from datetime import datetime
                     start_time = datetime.now()
-                    execution_date = start_time.strftime('%Y-%m-%d')
+                    # If the asset is partitioned, feed the partition key to
+                    # Airflow as `execution_date` so `{{ ds }}` / etc. inside
+                    # the DAG resolve to the partition — enabling backfills.
+                    execution_date = (
+                        context.partition_key
+                        if getattr(context, 'has_partition_key', False)
+                        else start_time.strftime('%Y-%m-%d')
+                    )
 
                     # Use uv run to execute airflow
                     airflow_cmd = self._build_airflow_command("dags", "test", dag_id_param, execution_date)
@@ -2999,7 +3089,14 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
                 try:
                     start_time = datetime.now()
-                    execution_date = start_time.strftime('%Y-%m-%d')
+                    # If the asset is partitioned, feed the partition key to
+                    # Airflow as `execution_date` so `{{ ds }}` / etc. inside
+                    # the DAG resolve to the partition — enabling backfills.
+                    execution_date = (
+                        context.partition_key
+                        if getattr(context, 'has_partition_key', False)
+                        else start_time.strftime('%Y-%m-%d')
+                    )
                     # Use uv run to execute airflow with the correct virtual environment
                     airflow_cmd = self._build_airflow_command("dags", "test", dag_id, execution_date)
 
@@ -3141,7 +3238,14 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
                 try:
                     start_time = datetime.now()
-                    execution_date = start_time.strftime('%Y-%m-%d')
+                    # If the asset is partitioned, feed the partition key to
+                    # Airflow as `execution_date` so `{{ ds }}` / etc. inside
+                    # the DAG resolve to the partition — enabling backfills.
+                    execution_date = (
+                        context.partition_key
+                        if getattr(context, 'has_partition_key', False)
+                        else start_time.strftime('%Y-%m-%d')
+                    )
                     # Use uv run to execute airflow with the correct virtual environment
                     airflow_cmd = self._build_airflow_command("dags", "test", dag_id, execution_date)
 
@@ -4139,7 +4243,12 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
 
             try:
                 start_time = datetime.now()
-                execution_date = start_time.strftime('%Y-%m-%d')
+                # Partition-aware execution_date — see comment above other sites.
+                execution_date = (
+                    context.partition_key
+                    if getattr(context, 'has_partition_key', False)
+                    else start_time.strftime('%Y-%m-%d')
+                )
 
                 # Execute Airflow DAG with partition key as parameter
                 airflow_cmd = self._build_airflow_command("dags", "test", dag_id, execution_date)
@@ -4689,6 +4798,138 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             execution_timezone=schedule_config.timezone,
             default_status=default_status,
         )
+
+    def _airflow_uses_date_params(self, script_info) -> bool:
+        """True if the Airflow DAG file uses date-like context params."""
+        try:
+            src = script_info.script_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            return False
+        return _detect_airflow_date_params(src)
+
+    def _build_schedule_smart(
+        self, schedule_name, schedule_config, asset_name, partitioned_asset_def=None
+    ):
+        """Build a ScheduleDefinition, upgrading to a partition-aware one if
+        the referenced asset is partitioned and the cron cadence matches.
+
+        For a partitioned asset, a plain ScheduleDefinition fires without a
+        partition key — Dagster refuses to run. `build_schedule_from_partitioned_job`
+        auto-picks the just-completed partition on each tick.
+        """
+        if partitioned_asset_def is None:
+            return self._build_schedule(schedule_name, schedule_config, asset_name)
+
+        from dagster import (
+            AssetKey, AssetSelection,
+            build_schedule_from_partitioned_job, define_asset_job,
+        )
+        from .parsers.prefect_asset_support import _cron_interval_minutes
+
+        cron = schedule_config.cron_schedule
+        interval = _cron_interval_minutes(cron) if cron else None
+
+        # Detect partition cadence from the first spec's partitions_def.
+        pd = None
+        for spec in partitioned_asset_def.specs:
+            if spec.partitions_def is not None:
+                pd = spec.partitions_def
+                break
+        pd_cadence = {
+            "HourlyPartitionsDefinition": 60,
+            "DailyPartitionsDefinition": 1440,
+            "WeeklyPartitionsDefinition": 10080,
+            "MonthlyPartitionsDefinition": 43200,
+        }.get(type(pd).__name__)
+
+        if pd_cadence is None or interval != pd_cadence:
+            # Cadence mismatch — fall back to plain schedule with a warning.
+            logger.warning(
+                "Schedule %s (cron %s) doesn't match partition cadence for %s. "
+                "Scheduled runs will NOT auto-target a partition; use the "
+                "Dagster UI's backfill button to fill partitioned runs instead.",
+                schedule_name, cron, asset_name,
+            )
+            return self._build_schedule(schedule_name, schedule_config, asset_name)
+
+        try:
+            asset_keys = [spec.key for spec in partitioned_asset_def.specs]
+            job = define_asset_job(
+                name=f"{asset_name}_partitioned_job",
+                selection=AssetSelection.assets(*asset_keys),
+            )
+            return build_schedule_from_partitioned_job(
+                job=job,
+                name=schedule_name,
+                description=(
+                    f"Auto-picks the just-completed partition on each tick "
+                    f"(cron: {cron}, tz: {schedule_config.timezone or 'UTC'})"
+                ),
+            )
+        except Exception as e:
+            logger.debug(
+                f"Falling back to plain schedule for {schedule_name}: {e}"
+            )
+            return self._build_schedule(schedule_name, schedule_config, asset_name)
+
+    def _attach_partitions_from_schedule(self, asset_def, schedule_config):
+        """Attach a PartitionsDefinition (Hourly/Daily/Weekly/Monthly) to
+        every spec on `asset_def`, derived from the DAG's cron schedule.
+        Used for Airflow assets whose tasks reference date-like context
+        params (`{{ ds }}`, `execution_date`, `data_interval_start`, …).
+
+        Result: the same DAG code Airflow already runs on a schedule
+        becomes drag-select-backfillable in Dagster's UI — the partition
+        key is what gets passed as `execution_date` at run time.
+
+        Returns a new AssetsDefinition, or the input unchanged if the
+        cron doesn't map to a known Dagster partition cadence.
+        """
+        from datetime import datetime, timedelta as _td, timezone as _tz
+        from dagster import (
+            DailyPartitionsDefinition, HourlyPartitionsDefinition,
+            MonthlyPartitionsDefinition, WeeklyPartitionsDefinition,
+        )
+        from .parsers.prefect_asset_support import _cron_interval_minutes
+
+        cron = schedule_config.cron_schedule
+        interval = _cron_interval_minutes(cron) if cron else None
+        if not interval:
+            return asset_def
+
+        # Start 30 days back so users have a meaningful backfill window on day one.
+        start = datetime.now(_tz.utc) - _td(days=30)
+        try:
+            if interval <= 60:
+                partitions_def = HourlyPartitionsDefinition(
+                    start_date=start.strftime("%Y-%m-%d-%H:%M")
+                )
+            elif interval < 10080:
+                partitions_def = DailyPartitionsDefinition(
+                    start_date=start.strftime("%Y-%m-%d")
+                )
+            elif interval == 10080:
+                partitions_def = WeeklyPartitionsDefinition(
+                    start_date=(datetime.now(_tz.utc) - _td(days=180)).strftime("%Y-%m-%d")
+                )
+            else:
+                partitions_def = MonthlyPartitionsDefinition(
+                    start_date=(datetime.now(_tz.utc) - _td(days=365)).strftime("%Y-%m-%d")
+                )
+        except Exception as e:
+            logger.debug(f"Could not build PartitionsDefinition for cron={cron!r}: {e}")
+            return asset_def
+
+        def _apply(spec):
+            if spec.partitions_def is not None:
+                return spec  # user already set one — respect it
+            return spec.replace_attributes(partitions_def=partitions_def)
+
+        try:
+            return asset_def.map_asset_specs(_apply)
+        except Exception as e:
+            logger.debug(f"map_asset_specs failed while attaching partitions: {e}")
+            return asset_def
 
     def _attach_freshness_from_schedule(self, asset_def, schedule_config):
         """Attach a CronFreshnessPolicy to every spec on `asset_def`, derived
