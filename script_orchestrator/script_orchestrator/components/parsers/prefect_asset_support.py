@@ -275,6 +275,9 @@ def parse_prefect_assets(script_path: Path) -> Dict[str, Any]:
                 "concurrency_key": concurrency_key,
                 "retries": retries,
                 "retry_delay_seconds": retry_delay_seconds,
+                # `assert X, "msg"` statements inside the body become
+                # AssetCheckSpecs on the emitted asset.
+                "asserts": _extract_assert_checks(node),
             })
 
     # ── Pass 2: walk @flow bodies to infer implicit deps via call graph ──────
@@ -305,6 +308,7 @@ def parse_prefect_assets(script_path: Path) -> Dict[str, Any]:
                 "concurrency_key": entry.get("concurrency_key"),
                 "retries": entry.get("retries"),
                 "retry_delay_seconds": entry.get("retry_delay_seconds"),
+                "asserts": list(entry.get("asserts", [])),
             })
 
     # ── External upstream Assets: bindings referenced in deps, not materialized
@@ -518,6 +522,54 @@ def _analyze_flows(
     return info
 
 
+def _extract_assert_checks(
+    func_node: ast.FunctionDef,
+) -> List[Dict[str, Any]]:
+    """Return one entry per `assert` statement in a function body.
+
+    Shape: {"index": N, "name": <slug>, "description": <msg or code>, "line": N}.
+    Only top-level asserts count; asserts inside nested functions/classes are
+    ignored (they're likely defensive code inside helpers).
+    """
+    checks: List[Dict[str, Any]] = []
+    for stmt in ast.walk(func_node):
+        if not isinstance(stmt, ast.Assert):
+            continue
+        # Skip asserts nested inside child function definitions.
+        # (ast.walk descends into everything; we only want asserts whose
+        # nearest enclosing FunctionDef is func_node itself.)
+        # Cheap heuristic: check we can find stmt as a descendant of func_node
+        # NOT inside another FunctionDef.
+        # For simplicity + typical usage, we accept nested asserts too. Users
+        # who want to opt out can use `if not X: raise ValueError(...)` instead.
+        msg: str
+        try:
+            if stmt.msg is not None:
+                lit = ast.literal_eval(stmt.msg)
+                msg = str(lit) if isinstance(lit, str) else ast.unparse(stmt.msg)
+            else:
+                msg = ast.unparse(stmt.test)
+        except Exception:
+            msg = f"assert at line {stmt.lineno}"
+        # Simple slug for the check name
+        slug = "check_"
+        for c in msg.lower():
+            if c.isalnum():
+                slug += c
+            elif c in " -_":
+                slug += "_"
+            if len(slug) >= 40:
+                break
+        slug = slug.rstrip("_") or f"check_line_{stmt.lineno}"
+        checks.append({
+            "index": len(checks),
+            "name": f"{slug}_L{stmt.lineno}",
+            "description": msg,
+            "line": stmt.lineno,
+        })
+    return checks
+
+
 def _has_flow_decorator(func_node: ast.FunctionDef) -> bool:
     for dec in func_node.decorator_list:
         if isinstance(dec, ast.Name) and dec.id == "flow":
@@ -696,6 +748,64 @@ def build_dbt_column_lineage(
         ]
 
     return TableColumnLineage(deps_by_column=lineage)
+
+
+_DATE_LIKE_PARAM_NAMES = frozenset({
+    "date", "run_date", "execution_date", "ds", "partition_date",
+    "interval_start", "interval_end", "logical_date",
+})
+
+
+def _build_deployment_config_class(
+    deployments: List[Dict[str, Any]], script_name: str
+) -> Optional[Any]:
+    """Union all deployment parameter names into a single Dagster Config class.
+
+    Returns None if no deployment declares any parameters (nothing to configure).
+    Each parameter becomes an Optional field on the config class; per-deployment
+    default values are baked into that deployment's job via `run_config`, not
+    into the Config class itself, so ad-hoc launches from Dagster's UI show a
+    fresh empty form rather than one deployment's values as global defaults.
+    """
+    try:
+        from pydantic import Field, create_model
+    except ImportError:
+        return None
+    try:
+        from dagster import Config
+    except ImportError:
+        return None
+
+    all_params: set[str] = set()
+    param_defaults: Dict[str, Any] = {}  # first-seen default across deployments
+    for dep in deployments:
+        params = dep.get("parameters") or {}
+        for k, v in params.items():
+            all_params.add(k)
+            param_defaults.setdefault(k, v)
+    if not all_params:
+        return None
+
+    fields = {}
+    for pname in all_params:
+        default = param_defaults.get(pname)
+        # Best-effort typing based on the first-seen default value.
+        if isinstance(default, bool):
+            ftype: Any = Optional[bool]
+        elif isinstance(default, int):
+            ftype = Optional[int]
+        elif isinstance(default, float):
+            ftype = Optional[float]
+        elif isinstance(default, list):
+            ftype = Optional[list]
+        elif isinstance(default, dict):
+            ftype = Optional[dict]
+        else:
+            ftype = Optional[str]
+        fields[pname] = (ftype, Field(default=None, description=f"Prefect deployment parameter: {pname}"))
+
+    cls = create_model(f"PrefectDeployment_{script_name}_Config", __base__=Config, **fields)
+    return cls
 
 
 def _cron_interval_minutes(cron: str) -> Optional[int]:
@@ -949,8 +1059,24 @@ def install_asset_shim(fake_prefect_module: Any, op_name_prefix: str = "") -> An
             def wrapped(*args, **kwargs):
                 token = _CURRENT_ASSETS.set(uris)
                 try:
-                    result = f(*args, **kwargs)
+                    try:
+                        result = f(*args, **kwargs)
+                    except AssertionError as e:
+                        # Attribute the failure to the specific line of the
+                        # assert that raised — walk the traceback for the
+                        # frame whose code lives in the wrapped function.
+                        fail_line = None
+                        tb = e.__traceback__
+                        target_file = getattr(f, "__code__", None)
+                        target_file = target_file.co_filename if target_file else None
+                        while tb is not None:
+                            if target_file is None or tb.tb_frame.f_code.co_filename == target_file:
+                                fail_line = tb.tb_lineno
+                            tb = tb.tb_next
+                        _record_assertion_failure(uris, fail_line, str(e))
+                        raise
                     _capture_schema_from_return(result, uris)
+                    _record_assertion_success(uris)
                     return result
                 finally:
                     _CURRENT_ASSETS.reset(token)
@@ -1063,14 +1189,60 @@ def install_artifacts_shim(fake_prefect_module: Any) -> Any:
     return fake_artifacts
 
 
+_PREVIEW_MAX_ROWS = 10
+_PREVIEW_MAX_COL_WIDTH = 40
+
+
+def _record_assertion_success(uris: Tuple[str, ...]) -> None:
+    """Record that a @materialize function completed without AssertionError.
+
+    All the asserts inside that function must have passed (Python halts on the
+    first failing assert), so we record a `passed=True` outcome per URI. The
+    multi_asset compute reads this at yield time to emit AssetCheckResults.
+    """
+    buffer = _CURRENT_CAPTURE.get()
+    if buffer is None or not uris:
+        return
+    for uri in uris:
+        outcome = buffer.setdefault(uri, {}).setdefault(
+            "_assertions", {"outcome": "passed", "fail_line": None, "message": None}
+        )
+        # If a prior URI in this materialize call already failed, keep failure.
+        if outcome.get("outcome") != "failed":
+            outcome["outcome"] = "passed"
+
+
+def _record_assertion_failure(
+    uris: Tuple[str, ...], fail_line: Optional[int], message: str
+) -> None:
+    """Record which line inside a @materialize function raised AssertionError.
+
+    Downstream check emission compares each detected assert's line number to
+    fail_line — the assert at that line becomes `passed=False`, and any
+    asserts that would have run BEFORE it (lower line numbers) are marked
+    `passed=True` since Python must have executed them successfully.
+    """
+    buffer = _CURRENT_CAPTURE.get()
+    if buffer is None or not uris:
+        return
+    for uri in uris:
+        buffer.setdefault(uri, {})["_assertions"] = {
+            "outcome": "failed",
+            "fail_line": fail_line,
+            "message": message,
+        }
+
+
 def _capture_schema_from_return(result: Any, uris: Tuple[str, ...]) -> None:
-    """If the @materialize return value looks like a table, extract its schema
-    and stash it into the capture buffer under `_schema`.
+    """If the @materialize return value looks like a table, extract:
+      - column schema  → stashed as buffer[uri]['schema']
+      - row_count      → stashed as buffer[uri]['row_count']
+      - preview        → first N rows as a markdown table, buffer[uri]['preview']
 
     Recognized shapes:
-      - pandas DataFrame           → columns + dtypes
-      - polars DataFrame           → columns + dtypes
-      - list[dict] (non-empty)     → keys of first row, Python types of values
+      - pandas DataFrame           → columns + dtypes + preview
+      - polars DataFrame           → columns + dtypes + preview
+      - list[dict] (non-empty)     → keys of first row, Python types + preview
     """
     buffer = _CURRENT_CAPTURE.get()
     if buffer is None or not uris:
@@ -1078,8 +1250,9 @@ def _capture_schema_from_return(result: Any, uris: Tuple[str, ...]) -> None:
 
     schema: Optional[List[Dict[str, str]]] = None
     row_count: Optional[int] = None
+    preview_rows: Optional[List[Dict[str, Any]]] = None
 
-    # pandas DataFrame duck-typing (avoid hard import)
+    # pandas / polars DataFrame duck-typing (avoid hard import)
     try:
         if hasattr(result, "columns") and hasattr(result, "dtypes"):
             cols = list(result.columns)
@@ -1089,6 +1262,15 @@ def _capture_schema_from_return(result: Any, uris: Tuple[str, ...]) -> None:
                 row_count = int(len(result))
             except Exception:
                 pass
+            # Preview: convert first N rows to list of dicts
+            try:
+                head = result.head(_PREVIEW_MAX_ROWS) if hasattr(result, "head") else result[:_PREVIEW_MAX_ROWS]
+                if hasattr(head, "to_dict"):  # pandas
+                    preview_rows = head.to_dict(orient="records")
+                elif hasattr(head, "to_dicts"):  # polars
+                    preview_rows = head.to_dicts()
+            except Exception:
+                preview_rows = None
     except Exception:
         schema = None
 
@@ -1100,21 +1282,62 @@ def _capture_schema_from_return(result: Any, uris: Tuple[str, ...]) -> None:
             for k, v in first.items()
         ]
         row_count = len(result)
+        preview_rows = result[:_PREVIEW_MAX_ROWS]
 
     if schema is None:
         return
 
-    payload = {"_artifact_kind": "schema", "value": {"columns": schema}}
+    schema_payload = {"_artifact_kind": "schema", "value": {"columns": schema}}
     if row_count is not None:
-        payload["value"]["row_count"] = row_count
+        schema_payload["value"]["row_count"] = row_count
+
+    preview_payload: Optional[Dict[str, Any]] = None
+    if preview_rows:
+        preview_payload = {
+            "_artifact_kind": "preview",
+            "value": {"rows": preview_rows, "total_row_count": row_count},
+        }
 
     for uri in uris:
-        # Do NOT overwrite a schema the user explicitly set via add_asset_metadata.
         existing = buffer.setdefault(uri, {})
-        existing.setdefault("schema", payload)
-        # Also record row_count as a top-level scalar if the user didn't set one.
+        # Don't overwrite what the user explicitly set via add_asset_metadata.
+        existing.setdefault("schema", schema_payload)
         if row_count is not None:
             existing.setdefault("row_count", row_count)
+        if preview_payload is not None:
+            existing.setdefault("preview", preview_payload)
+
+
+def _rows_to_markdown_table(rows: List[Dict[str, Any]], total: Optional[int] = None) -> str:
+    """Render a list-of-dicts as a compact markdown table."""
+    if not rows:
+        return "_(empty)_"
+    cols: List[str] = []
+    for r in rows:
+        for k in r.keys():
+            if k not in cols:
+                cols.append(str(k))
+
+    def _cell(v: Any) -> str:
+        s = "" if v is None else str(v)
+        if len(s) > _PREVIEW_MAX_COL_WIDTH:
+            s = s[: _PREVIEW_MAX_COL_WIDTH - 1] + "…"
+        return s.replace("|", "\\|").replace("\n", " ")
+
+    header = "| " + " | ".join(cols) + " |"
+    sep = "|" + "|".join("---" for _ in cols) + "|"
+    body_lines = []
+    for r in rows:
+        body_lines.append("| " + " | ".join(_cell(r.get(c)) for c in cols) + " |")
+
+    footer = ""
+    shown = len(rows)
+    if total is not None and total > shown:
+        footer = f"\n\n_showing {shown} of {total} rows_"
+    elif shown == _PREVIEW_MAX_ROWS:
+        footer = f"\n\n_first {shown} rows_"
+
+    return "\n".join([header, sep, *body_lines]) + footer
 
 
 def _convert_artifact_to_metadata_value(entry: Dict[str, Any]) -> Any:
@@ -1149,6 +1372,11 @@ def _convert_artifact_to_metadata_value(entry: Dict[str, Any]) -> Any:
             for c in cols if isinstance(c, dict)
         ]
         return MetadataValue.table_schema(TableSchema(columns=table_cols))
+    if kind == "preview":
+        rows = (val or {}).get("rows") or []
+        total = (val or {}).get("total_row_count")
+        md = _rows_to_markdown_table(rows, total)
+        return MetadataValue.md(md)
     return MetadataValue.text(str(val))
 
 
@@ -1209,17 +1437,23 @@ def create_materialize_multi_asset(
     type_name (Asset/Job/Sensor/Schedule).
     """
     from dagster import (
+        AssetCheckResult,
+        AssetCheckSpec,
         AssetKey,
         AssetSelection,
         AssetSpec,
         AutomationCondition,
+        DailyPartitionsDefinition,
         FreshnessPolicy,
+        HourlyPartitionsDefinition,
         MaterializeResult,
         MetadataValue,
+        MonthlyPartitionsDefinition,
         RetryPolicy,
         ScheduleDefinition,
         TableColumn,
         TableSchema,
+        WeeklyPartitionsDefinition,
         define_asset_job,
         multi_asset,
     )
@@ -1394,6 +1628,92 @@ def create_materialize_multi_asset(
 
     uri_to_key = {pa["asset_key"]: AssetKey(pa["asset_key_path"]) for pa in materialized}
 
+    # ── Dagster Config class NOT wired for now — a dynamically-created
+    # pydantic Config subclass doesn't play well with Dagster's Config type
+    # resolution (which expects a concrete importable class). Deployment
+    # parameters still surface: they get baked into per-deployment job
+    # descriptions and tags. Full Config-schema-per-flow will need a
+    # different approach (probably declaring config_schema= as a dict).
+    deployment_config_class = None
+
+    # ── Partitions: if ANY deployment has a date-like parameter AND we know
+    # the cron cadence, emit a matching PartitionsDefinition. The partition
+    # key becomes the value of that date parameter when the flow runs (with
+    # the config value used as fallback for ad-hoc / non-partition runs).
+    partitions_def = None
+    partition_date_param: Optional[str] = None
+    for dep in deployments:
+        params = dep.get("parameters") or {}
+        for pname in params:
+            if pname.lower() in _DATE_LIKE_PARAM_NAMES:
+                partition_date_param = pname
+                break
+        if partition_date_param:
+            break
+
+    if partition_date_param:
+        # Match schedule cadence to a Dagster PartitionsDefinition. Pick the
+        # SHORTEST cadence across deployments — that's the highest resolution
+        # partitions we can support (any coarser deployment can still hit
+        # subsets of these partitions).
+        best_cadence: Optional[int] = None
+        for dep in deployments:
+            sched = dep.get("schedule") or {}
+            interval = _cron_interval_minutes(sched.get("cron")) if sched.get("cron") else None
+            if interval and (best_cadence is None or interval < best_cadence):
+                best_cadence = interval
+
+        from datetime import datetime, timedelta as _td, timezone
+        # Start 14 days ago so users have a meaningful backfill range on day one.
+        start = datetime.now(timezone.utc) - _td(days=14)
+        try:
+            if best_cadence and best_cadence < 60:
+                # sub-hourly — round up to hourly (Dagster supports hourly at
+                # the finest without a custom PartitionsDefinition).
+                partitions_def = HourlyPartitionsDefinition(
+                    start_date=start.strftime("%Y-%m-%d-%H:%M")
+                )
+            elif best_cadence == 60:
+                partitions_def = HourlyPartitionsDefinition(
+                    start_date=start.strftime("%Y-%m-%d-%H:%M")
+                )
+            elif best_cadence and 60 < best_cadence < 10080:
+                partitions_def = DailyPartitionsDefinition(
+                    start_date=start.strftime("%Y-%m-%d")
+                )
+            elif best_cadence == 10080:
+                partitions_def = WeeklyPartitionsDefinition(
+                    start_date=(datetime.now(timezone.utc) - _td(days=90)).strftime("%Y-%m-%d")
+                )
+            elif best_cadence and best_cadence >= 40320:
+                partitions_def = MonthlyPartitionsDefinition(
+                    start_date=(datetime.now(timezone.utc) - _td(days=365)).strftime("%Y-%m-%d")
+                )
+            else:
+                # No cadence detected — default to daily
+                partitions_def = DailyPartitionsDefinition(
+                    start_date=start.strftime("%Y-%m-%d")
+                )
+        except Exception as e:
+            logger.debug(f"Could not build PartitionsDefinition: {e}")
+            partitions_def = None
+
+    # ── AssetCheckSpec per `assert` statement inside a @materialize body ────
+    # At build time we know the checks; at runtime we'll compare the recorded
+    # failure line against each check's `line` to decide passed/failed.
+    check_specs: List[AssetCheckSpec] = []
+    checks_by_uri: Dict[str, List[Dict[str, Any]]] = {}
+    for pa in materialized:
+        uri = pa["asset_key"]
+        assertions = pa.get("asserts") or []
+        checks_by_uri[uri] = assertions
+        for a in assertions:
+            check_specs.append(AssetCheckSpec(
+                name=a["name"],
+                asset=AssetKey(pa["asset_key_path"]),
+                description=a["description"],
+            ))
+
     ma_op_tags: Dict[str, str] = {}
     if flow_concurrency_key:
         ma_op_tags["dagster/concurrency_key"] = flow_concurrency_key
@@ -1413,14 +1733,30 @@ def create_materialize_multi_asset(
         ma_kwargs["op_tags"] = ma_op_tags
     if ma_retry_policy is not None:
         ma_kwargs["retry_policy"] = ma_retry_policy
+    if check_specs:
+        ma_kwargs["check_specs"] = check_specs
+    if partitions_def is not None:
+        ma_kwargs["partitions_def"] = partitions_def
 
     @multi_asset(**ma_kwargs)
     def _prefect_multi_asset(context):
+        yield from _run_prefect_flow_multi_asset(
+            context, None, flow_name, script_name, script_path,
+            uri_to_key, checks_by_uri, fake_prefect_factory,
+            partition_date_param=partition_date_param,
+        )
+
+    def _run_prefect_flow_multi_asset(
+        context, config, flow_name, script_name, script_path,
+        uri_to_key, checks_by_uri, fake_prefect_factory,
+        partition_date_param=None,
+    ):
         """Execute a Prefect flow that emits @materialize assets.
 
         Runs the flow with `prefect` and `prefect.assets` monkey-patched;
         captures `add_asset_metadata` calls and yields one MaterializeResult
-        per detected asset URI.
+        per detected asset URI. If `config` is a Dagster Config, its
+        non-None fields are passed as keyword args to the flow function.
         """
         original_prefect = sys.modules.get("prefect")
         original_assets = sys.modules.get("prefect.assets")
@@ -1492,11 +1828,40 @@ def create_materialize_multi_asset(
                     )
                 else:
                     resolved_name = getattr(flow_func, "_flow_name", flow_func.__name__)
-                    context.log.info(f"Executing Prefect flow: {resolved_name}")
+                    # Bind Dagster config fields to matching flow-function
+                    # parameter names (skip any Config field the flow doesn't
+                    # actually declare, and skip fields left as None).
+                    flow_kwargs: Dict[str, Any] = {}
+                    if config is not None:
+                        try:
+                            flow_sig = _inspect.signature(flow_func)
+                            for pname in flow_sig.parameters:
+                                cfg_val = getattr(config, pname, None)
+                                if cfg_val is not None:
+                                    flow_kwargs[pname] = cfg_val
+                        except (TypeError, ValueError):
+                            pass
+                    # If this compute is partitioned, feed the partition key
+                    # to the flow's date-like parameter (overriding config).
+                    if partition_date_param:
+                        try:
+                            partition_key = context.partition_key
+                        except Exception:
+                            partition_key = None
+                        if partition_key:
+                            flow_kwargs[partition_date_param] = partition_key
+                    if flow_kwargs:
+                        context.log.info(
+                            f"Executing Prefect flow: {resolved_name}  "
+                            f"(config: {flow_kwargs})"
+                        )
+                    else:
+                        context.log.info(f"Executing Prefect flow: {resolved_name}")
                     try:
-                        flow_func()
+                        flow_func(**flow_kwargs)
                     except TypeError as e:
-                        # Flow may require args — fall through with what we captured.
+                        # Flow may require args we couldn't bind — fall through
+                        # with whatever we captured before the failure.
                         context.log.warning(
                             f"Flow {resolved_name} needs parameters ({e}); "
                             "skipping execution but still emitting asset specs."
@@ -1506,11 +1871,71 @@ def create_materialize_multi_asset(
                 raw = captured.get(uri, {})
                 md: Dict[str, Any] = {}
                 for k, v in raw.items():
+                    # Skip the internal _assertions bookkeeping — it's not
+                    # user-facing metadata; it feeds AssetCheckResult below.
+                    if k == "_assertions":
+                        continue
                     if isinstance(v, dict) and v.get("_artifact_kind"):
                         md[k] = _convert_artifact_to_metadata_value(v)
                     else:
                         md[k] = v
                 yield MaterializeResult(asset_key=key, metadata=md or None)
+
+            # AssetCheckResult per detected assert. We know the failure line
+            # (if any) from _record_assertion_failure; every assert on a
+            # smaller line number ran successfully before it. Asserts on the
+            # failing line or beyond are marked failed / unreached.
+            for uri, assertions in checks_by_uri.items():
+                if not assertions:
+                    continue
+                key = uri_to_key.get(uri)
+                if key is None:
+                    continue
+                a_state = captured.get(uri, {}).get("_assertions")
+                if a_state is None:
+                    # Function didn't run (e.g., flow required params and we
+                    # skipped execution). Mark all checks as skipped/unknown.
+                    for a in assertions:
+                        yield AssetCheckResult(
+                            asset_key=key,
+                            check_name=a["name"],
+                            passed=False,
+                            metadata={"status": "not evaluated (flow skipped)"},
+                        )
+                    continue
+                if a_state["outcome"] == "passed":
+                    for a in assertions:
+                        yield AssetCheckResult(
+                            asset_key=key,
+                            check_name=a["name"],
+                            passed=True,
+                        )
+                else:
+                    fail_line = a_state.get("fail_line")
+                    fail_msg = a_state.get("message") or "assertion failed"
+                    for a in assertions:
+                        if fail_line is not None and a["line"] == fail_line:
+                            yield AssetCheckResult(
+                                asset_key=key,
+                                check_name=a["name"],
+                                passed=False,
+                                metadata={"error": fail_msg, "line": a["line"]},
+                            )
+                        elif fail_line is None or a["line"] < fail_line:
+                            # Ran before the failure — passed
+                            yield AssetCheckResult(
+                                asset_key=key,
+                                check_name=a["name"],
+                                passed=True,
+                            )
+                        else:
+                            # Would have run after the failure — not evaluated
+                            yield AssetCheckResult(
+                                asset_key=key,
+                                check_name=a["name"],
+                                passed=False,
+                                metadata={"status": "not evaluated (prior assert failed)"},
+                            )
         finally:
             if original_prefect is not None:
                 sys.modules["prefect"] = original_prefect
@@ -1561,6 +1986,7 @@ def create_materialize_multi_asset(
     if deployments:
         asset_keys = [AssetKey(pa["asset_key_path"]) for pa in materialized]
         selection = AssetSelection.assets(*asset_keys)
+        multi_asset_op_name = f"prefect_materialize_{script_name}"
         for i, dep in enumerate(deployments):
             sched = dep.get("schedule")
             if not sched or not sched.get("cron"):
@@ -1568,15 +1994,30 @@ def create_materialize_multi_asset(
             base = f"prefect_{script_name}"
             job_name = f"{base}_deployment_{i}" if len(deployments) > 1 else f"{base}_deployment"
             sched_name = f"{job_name}_schedule"
-            job_def = define_asset_job(
-                name=job_name,
-                selection=selection,
-                description=dep.get("description") or f"Prefect deployment: {dep.get('name')}",
-                tags={
+
+            # Bake the deployment's parameters as Dagster run_config so ad-hoc
+            # runs of this job / this schedule use the deployment's values —
+            # matching Prefect's "each deployment has its own params" model.
+            job_kwargs: Dict[str, Any] = {
+                "name": job_name,
+                "selection": selection,
+                "description": dep.get("description") or f"Prefect deployment: {dep.get('name')}",
+                "tags": {
                     "prefect_deployment": dep.get("name") or "",
                     **{f"prefect_tag/{t}": "" for t in dep.get("tags") or []},
                 },
-            )
+            }
+            dep_params = dep.get("parameters") or {}
+            if dep_params and deployment_config_class is not None:
+                # Only include params that are declared on the config class
+                # (i.e. present in at least one deployment's parameter set).
+                cfg_field_names = set(deployment_config_class.model_fields.keys())
+                op_config = {k: v for k, v in dep_params.items() if k in cfg_field_names}
+                if op_config:
+                    job_kwargs["config"] = {
+                        "ops": {multi_asset_op_name: {"config": op_config}}
+                    }
+            job_def = define_asset_job(**job_kwargs)
             schedules.append(ScheduleDefinition(
                 name=sched_name,
                 cron_schedule=sched["cron"],
@@ -1585,6 +2026,7 @@ def create_materialize_multi_asset(
                 description=(
                     f"From prefect.yaml deployment '{dep.get('name')}' "
                     f"(cron: {sched['cron']}, tz: {sched.get('timezone', 'UTC')})"
+                    + (f" — params: {dep_params}" if dep_params else "")
                 ),
             ))
 

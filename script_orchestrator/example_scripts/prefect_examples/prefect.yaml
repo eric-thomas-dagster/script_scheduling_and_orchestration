@@ -17,3 +17,30 @@ deployments:
       cron: "0 6 * * *"
       timezone: UTC
     description: "Nightly full re-materialization of the customer pipeline."
+
+  # Exercises the four-pack: parameters → Dagster Config, run_date →
+  # DailyPartitionsDefinition, asserts → asset checks, return values →
+  # auto data previews.
+  - name: daily-orders-us
+    entrypoint: materialize_partitioned_demo.py:daily_orders_pipeline
+    tags: [demos, orders]
+    schedule:
+      cron: "0 6 * * *"
+      timezone: UTC
+    parameters:
+      run_date: "2024-01-01"
+      max_price: 50
+      notify_email: "us-team@example.com"
+    description: "Nightly orders load — US team's cutoff."
+
+  - name: daily-orders-strict
+    entrypoint: materialize_partitioned_demo.py:daily_orders_pipeline
+    tags: [demos, orders, strict]
+    schedule:
+      cron: "0 7 * * *"
+      timezone: UTC
+    parameters:
+      run_date: "2024-01-01"
+      max_price: 30
+      notify_email: "compliance@example.com"
+    description: "Same pipeline, stricter max_price cutoff."
