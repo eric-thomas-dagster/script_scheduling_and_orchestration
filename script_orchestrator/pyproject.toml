@@ -43,7 +43,7 @@ directory_type = "project"
 root_module = "script_orchestrator"
 
 [tool.dagster]
-module_name = "script_orchestrator"
+module_name = "script_orchestrator.definitions"
 registry_modules = ["script_orchestrator.components"]
 
 [tool.setuptools.packages.find]
