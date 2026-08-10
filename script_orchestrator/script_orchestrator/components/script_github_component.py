@@ -1763,9 +1763,20 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 continue
 
             # Skip files in utility directories (include/, tasks/, scripts/, etc.)
-            # These are typically helper modules, not standalone scripts
-            path_parts = script_file.parts
-            if any(part in ['include', 'utils', 'lib', 'helpers', 'scripts'] for part in path_parts):
+            # These are typically helper modules, not standalone scripts.
+            #
+            # IMPORTANT: check path parts RELATIVE to scripts_dir, not the
+            # absolute path. Otherwise a state-storage path like
+            # `.local_defs_state/scripts/repo_clone/flows/foo.py` would
+            # match "scripts" from the STORAGE dir name and skip every
+            # user file — even though the user's `flows/` directory has
+            # nothing to do with utility scripts.
+            try:
+                relative_parts = script_file.relative_to(scripts_dir).parts
+            except ValueError:
+                # Fallback (shouldn't happen — rglob only yields descendants)
+                relative_parts = script_file.parts
+            if any(part in ['include', 'utils', 'lib', 'helpers', 'scripts'] for part in relative_parts):
                 logger.debug(f"Skipping {script_file.name} - in utility directory")
                 continue
 
