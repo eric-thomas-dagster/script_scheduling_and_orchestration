@@ -1660,14 +1660,20 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             f"and {len(all_asset_checks)} asset checks"
         )
 
-        # Add no-op IO manager for Airflow assets that only yield metadata
+        # No-op IO manager only exists for Airflow-wrapped assets that yield
+        # metadata. Registering it unconditionally means two component instances
+        # in the same code location collide on merge (same key, different
+        # instance). Only register when Airflow is actually enabled.
+        script_resources = (
+            {"airflow_io_manager": NoOpIOManager()} if self.airflow_enabled else {}
+        )
         script_defs = Definitions(
             assets=all_assets,
             jobs=all_jobs,
             sensors=all_sensors,
             schedules=all_schedules,
             asset_checks=all_asset_checks if all_asset_checks else None,
-            resources={"airflow_io_manager": NoOpIOManager()},
+            resources=script_resources,
         )
 
         # If a dbt project is configured, build native Cosmos/dbt definitions
