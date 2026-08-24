@@ -17,7 +17,7 @@ attributes:
   repo_url: https://github.com/PrefectHQ/demos
   repo_branch: main
   github_token: null       # set via GITHUB_TOKEN for private forks
-  scripts_directory: demos
+  scripts_directory: .   # Prefect demo scripts live at the repo root, not in a demos/ subdir
   use_local: false
 
   # ── Script types ─────────────────────────────────────────────────────────
@@ -30,12 +30,15 @@ attributes:
   # `from prefect.assets import ...` line at import time.
   # Prefect 2.x and 3.x are NOT wire-compatible — pinning to a 3.x floor keeps
   # the demos runnable and unlocks the asset primitives.
-  prefect_version: ">=3.4"
+  prefect_version: null    # use whatever prefect version is pip-installed
   prefect_auto_install: true
 
   # ── Cosmos / dbt ─────────────────────────────────────────────────────────
   # Prefect demos don't ship a dbt project, so leave Cosmos routing off.
   dbt_project_path: ""
+
+  # Auto-derive freshness SLAs from the flow's own schedule cron.
+  auto_freshness_policies: true
 
   # ── Per-file overrides ────────────────────────────────────────────────────
   # `demos/*/prefect.yaml` are Prefect deployment configs, not scripts —
@@ -43,7 +46,45 @@ attributes:
   # tune schedules or descriptions per demo.
   file_overrides:
     prefect:
-      enabled: false
+      enabled: false          # prefect.yaml is a deployment config, not a script
+
+    # Lineage / metadata for PrefectHQ/demos scripts (we don't own that repo,
+    # so we express these in defs.yaml rather than committing companion .yaml
+    # files there). Requires script-orchestrator commit ac7f795 or later.
+    model_training:
+      description: "Train a churn model on nightly customer features."
+      owners: ["ml-platform@example.com"]
+      kinds: ["ml", "s3"]
+      group_name: "ml_pipeline"
+
+    model_inference:
+      description: "Score today's customer batch against the latest churn model."
+      owners: ["ml-platform@example.com"]
+      kinds: ["ml", "s3"]
+      group_name: "ml_pipeline"
+      depends_on: [model_training]      # ← real Dagster deps= edge
+
+    my_data_pipeline:
+      description: "ETL: raw HTTP source → cleaned parquet."
+      owners: ["data-eng@example.com"]
+      group_name: "etl"
+
+    my_workflow:
+      description: "Downstream aggregation of the my_data_pipeline output."
+      owners: ["data-eng@example.com"]
+      group_name: "etl"
+      depends_on: [my_data_pipeline]    # ← lineage arrow
+
+    repo_analysis:
+      description: "Nightly repo stats — starred repos, contributor counts."
+      owners: ["dev-tools@example.com"]
+      kinds: ["http", "github"]
+      group_name: "reporting"
+
+    simulate_failures:
+      description: "Chaos-testing flow — deliberately fails to demo retry policies."
+      owners: ["platform-sre@example.com"]
+      group_name: "chaos_tests"
 
   # ── Airflow connections / variables (unused for Prefect) ─────────────────
   connections: {}
