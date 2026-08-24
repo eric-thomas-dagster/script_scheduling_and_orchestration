@@ -1958,12 +1958,25 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 except OSError:
                     detected = None
                 if detected:
+                    from ..schemas.script_metadata import (
+                        AirflowMappingConfig,
+                        PrefectMappingConfig,
+                    )
                     if metadata is None:
                         metadata = ScriptMetadata(script_type=detected)
                     elif metadata.script_type == "python":
                         # Override the default; user-supplied non-default values in YAML
                         # already short-circuited via yaml_set_script_type above.
                         metadata.script_type = detected
+                    # Also enable the corresponding mapping so downstream code
+                    # takes the expansion path (per-URI AssetKeys, deps edges,
+                    # dbt kind, etc.) rather than falling back to opaque wraps.
+                    # Users who want the opaque behavior can pin
+                    # prefect_mapping.enabled: false in the companion YAML.
+                    if detected == "prefect" and metadata.prefect_mapping is None:
+                        metadata.prefect_mapping = PrefectMappingConfig(enabled=True)
+                    if detected == "airflow" and metadata.airflow_mapping is None:
+                        metadata.airflow_mapping = AirflowMappingConfig(enabled=True)
 
             # Generate script name from file path
             script_name = script_file.stem
