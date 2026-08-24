@@ -159,6 +159,39 @@ def _imports_cosmos(source: str) -> bool:
     return False
 
 
+def _detect_script_type(source: str) -> Optional[str]:
+    """Classify a script as prefect / airflow / None (fall back to python).
+
+    Signals in order of specificity — first match wins:
+      - Prefect: `from prefect` or `import prefect` anywhere, OR any
+        `@materialize` / `@flow` decorator
+      - Airflow: `from airflow` or `import airflow`, OR any `@dag` /
+        `@task_group` decorator, OR `DAG(` constructor use
+    Returns None when nothing is detected — caller keeps the default.
+    """
+    if not source:
+        return None
+    src = source
+    # Prefect signals — check first because prefect_dbt scripts also import
+    # from prefect and we want them treated as prefect too.
+    if (
+        "from prefect" in src
+        or "import prefect" in src
+        or "@materialize" in src
+        or "@flow" in src
+    ):
+        return "prefect"
+    if (
+        "from airflow" in src
+        or "import airflow" in src
+        or "@dag" in src
+        or "@task_group" in src
+        or "DAG(" in src
+    ):
+        return "airflow"
+    return None
+
+
 def _imports_prefect_dbt(source: str) -> bool:
     """Return True if *source* uses the `prefect_dbt` collection.
 
@@ -1893,6 +1926,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             # Look for corresponding YAML file
             yaml_file = script_file.with_suffix(".yaml")
             metadata = None
+            yaml_set_script_type = False
             if yaml_file.exists():
                 discovered_yaml_files.add(yaml_file)
 
@@ -1909,9 +1943,27 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     if "etl" in yaml_file.name.lower():
                         logger.warning(f"!!! ETL YAML: {yaml_file.name}")
                         logger.warning(f"!!! Parsed mode: {metadata_dict.get('prefect_mapping', {}).get('mode')}")
+                    yaml_set_script_type = "script_type" in (metadata_dict or {})
                     metadata = ScriptMetadata(**metadata_dict)
                 except Exception as e:
                     logger.warning(f"Could not parse {yaml_file}: {e}")
+
+            # Auto-detect script_type from imports when no companion YAML has
+            # set it explicitly. Lets users drop a bare Prefect / Airflow .py in
+            # a scripts directory and have it classified correctly with zero
+            # boilerplate — matching the "no code changes required" promise.
+            if not yaml_set_script_type:
+                try:
+                    detected = _detect_script_type(script_file.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    detected = None
+                if detected:
+                    if metadata is None:
+                        metadata = ScriptMetadata(script_type=detected)
+                    elif metadata.script_type == "python":
+                        # Override the default; user-supplied non-default values in YAML
+                        # already short-circuited via yaml_set_script_type above.
+                        metadata.script_type = detected
 
             # Generate script name from file path
             script_name = script_file.stem
