@@ -823,13 +823,25 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 logger.info(f"{orchestrator.title()} {installed_version} is installed (no target version specified, using installed version)")
                 return
 
-            # Check if installed version matches target
-            installed_major_minor = ".".join(installed_version.split(".")[:2])
-            target_major_minor = ".".join(target_version.split(".")[:2])
+            # Check if installed version matches target. `target_version` accepts
+            # either a bare version like "3.4" (short-hand for "==3.4.*") or a full
+            # PEP 440 spec like ">=3.4", "==3.4.*", "~=3.4", ">=3.4,<4".
+            from packaging.specifiers import SpecifierSet
+            from packaging.version import Version, InvalidVersion
 
-            if installed_major_minor == target_major_minor:
-                logger.info(f"{orchestrator.title()} {installed_version} is installed (matches target {target_version})")
-                return
+            _spec_chars = {">", "<", "=", "~", "!"}
+            if target_version and target_version[0] in _spec_chars:
+                target_spec = SpecifierSet(target_version)
+            else:
+                # Bare version → treat as major.minor match (existing behavior)
+                target_spec = SpecifierSet(f"=={target_version}.*") if target_version else None
+
+            try:
+                if target_spec is not None and Version(installed_version) in target_spec:
+                    logger.info(f"{orchestrator.title()} {installed_version} is installed (satisfies {target_version})")
+                    return
+            except InvalidVersion:
+                logger.debug(f"Could not parse installed {orchestrator} version {installed_version!r}; falling through to string compare.")
 
             # Version mismatch
             if not auto_install:
