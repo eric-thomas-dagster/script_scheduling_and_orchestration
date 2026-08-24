@@ -1981,6 +1981,33 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             # Generate script name from file path
             script_name = script_file.stem
 
+            # Apply file_overrides (defs.yaml file_overrides:) so users can
+            # supply lineage / owners / description / tags for scripts they
+            # don't own without touching source. Overrides always win — they
+            # were set explicitly by the operator.
+            override = self.file_overrides.get(script_name, {}) if self.file_overrides else {}
+            if override:
+                if metadata is None:
+                    metadata = ScriptMetadata()
+                # Simple field overrides
+                for key in ("description", "group_name"):
+                    if override.get(key) is not None:
+                        setattr(metadata, key, override[key])
+                # List / dict overrides: accept both merged and replace shapes.
+                # `depends_on` (also aliased as `deps`) → real Dagster deps= edges.
+                deps_override = override.get("depends_on") or override.get("deps")
+                if deps_override:
+                    if isinstance(deps_override, str):
+                        deps_override = [deps_override]
+                    metadata.depends_on = list(deps_override)
+                # Owners, tags, kinds — additive
+                if override.get("owners"):
+                    metadata.owners = list(override["owners"])
+                if override.get("kinds"):
+                    metadata.kinds = list(override["kinds"])
+                if override.get("tags"):
+                    metadata.tags = {**(metadata.tags or {}), **override["tags"]}
+
             scripts.append(
                 ScriptInfo(
                     name=script_name,
