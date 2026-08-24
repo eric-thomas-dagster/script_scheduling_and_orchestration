@@ -1,6 +1,6 @@
 # Demo script — Prefect → Dagster (~15 min)
 
-Companion to `WALKTHROUGH.md`. That doc lays out capabilities; this doc is the **talking track** — what to say, in what order, while clicking through the UI.
+Companion to `PREFECT_WALKTHROUGH.md`. That doc lays out capabilities; this doc is the **talking track** — what to say, in what order, while clicking through the UI.
 
 **Deployment**: https://ericthomas-dagster.dagster.cloud/prod/locations/dagster_orchestrator/assets
 **Pre-check before you present**:

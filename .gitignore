@@ -14,6 +14,9 @@ DEPLOYMENT.md
 ORGANIZATION_*.md
 CONFIG_*.md
 PREFECT_*.md
+# Committed walkthroughs / demo scripts (added-then-unignored by name)
+!PREFECT_WALKTHROUGH.md
+!PREFECT_DEMO_SCRIPT.md
 POLYMARKET_*.md
 STREAMING_*.md
 REFACTORING_*.md
