@@ -1,0 +1,52 @@
+type: script_orchestrator.components.ScriptGithubComponent
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Orchestrate the Prefect @materialize demos from this same repo — exercises
+# the full Prefect 3.4 asset-primitive mapping:
+#   • Asset(...) + AssetProperties → owners/description/url on Dagster assets
+#   • @materialize(...) → Dagster @asset with real AssetKey
+#   • asset_deps=[...] → explicit Dagster dependency edges
+#   • materialized_by="dbt" → shows up as a Dagster asset kind
+#   • add_asset_metadata({...}) → MaterializeResult metadata
+#   • create_markdown_artifact / create_link_artifact / create_table_artifact
+#     → Dagster MetadataValue on the materialization
+#   • Nested subflows → dependency edges inferred through the subflow call
+# ─────────────────────────────────────────────────────────────────────────────
+
+attributes:
+  repo_url: https://github.com/eric-thomas-dagster/script_scheduling_and_orchestration
+  repo_branch: master
+  github_token: null
+  scripts_directory: script_orchestrator/example_scripts/prefect_examples
+  use_local: false
+
+  airflow_enabled: false
+
+  prefect_enabled: true
+  prefect_version: null    # use whatever prefect version is pip-installed
+  prefect_auto_install: true
+
+  # jaffle_shop is cloned + compiled at Docker build time into `dbt/jaffle_shop`
+  # relative to the code location's project root (/app in Dagster+ Serverless).
+  # The resolver in ScriptGithubComponent tries `state.repo_path/<path>` first,
+  # then falls back to `cwd/<path>` — which lands on `/app/dbt/jaffle_shop`
+  # at runtime. Keeping the path relative here means this config is portable:
+  # a customer whose dbt project is inside their scripts repo hits it via the
+  # first root; ours (bundled with the code location) hits it via the second.
+  #
+  # Setting dbt_project_path here activates the "prefect_dbt → native
+  # @dbt_assets" mapping — dbt_via_prefect_demo.py stops being an opaque
+  # wrapper and expands into one Dagster asset per dbt model, with
+  # model-to-model lineage from manifest.json, columns from catalog.json,
+  # and dbt tests as asset checks.
+  dbt_project_path: dbt/jaffle_shop
+  dbt_target: dev
+  dbt_profiles_dir: dbt/jaffle_shop   # profiles.yml lives inside the project
+
+  # Auto-derive FreshnessPolicy from the deployment cron (prefect.yaml
+  # deployments: entries). Dagster's UI then shows PASS/WARN/FAIL per asset.
+  auto_freshness_policies: true
+
+  file_overrides: {}
+  connections: {}
+  airflow_variables: {}

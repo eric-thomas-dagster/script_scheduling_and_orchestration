@@ -5108,6 +5108,48 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
     #   skipped   — Infrastructure-specific; no Dagster equivalent.
     # =========================================================================
 
+    def _dbt_search_roots(self, repo_dir: Path) -> List[Path]:
+        """Roots to try when resolving a relative dbt_project_path / dbt_profiles_dir.
+
+        Order of preference:
+          1. `state.repo_path` — the cloned scripts repo. Right choice when
+             customers vendor their dbt project alongside their Prefect /
+             Airflow scripts.
+          2. `Path.cwd()` — the code-location project root. In Dagster+
+             Serverless this is `/app`; in local dev it's whatever directory
+             `dagster dev` was launched from. Right choice when the dbt
+             project is co-located with the Dagster code (installed at
+             image-build time), not with the scripts repo.
+
+        Absolute paths bypass this entirely — see `_resolve_dbt_path`.
+        """
+        roots = [repo_dir]
+        cwd = Path.cwd()
+        if cwd not in roots:
+            roots.append(cwd)
+        return roots
+
+    def _resolve_dbt_path(
+        self, dbt_path: str, repo_dir: Path
+    ) -> Optional[Path]:
+        """Resolve a possibly-relative dbt_project_path / dbt_profiles_dir.
+
+        - Absolute path → returned as-is (existence not required here; the
+          caller decides how to handle a missing path).
+        - Relative path → tried under each root from `_dbt_search_roots` in
+          order; the first existing candidate wins. Returns None if nothing
+          on disk matches, letting the caller raise a diagnostic error that
+          lists every root that was searched.
+        """
+        candidate = Path(dbt_path)
+        if candidate.is_absolute():
+            return candidate
+        for root in self._dbt_search_roots(repo_dir):
+            attempt = root / dbt_path
+            if attempt.exists():
+                return attempt
+        return None
+
     def _build_cosmos_dbt_defs(self, repo_dir: Path) -> "Definitions":
         """Build native @dbt_assets + jobs for all applicable Cosmos DAGs."""
         try:
@@ -5119,10 +5161,12 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 "uv add dagster-dbt dbt-core dbt-<your-adapter>"
             ) from exc
 
-        dbt_proj_dir = repo_dir / self.dbt_project_path
-        if not dbt_proj_dir.exists():
+        dbt_proj_dir = self._resolve_dbt_path(self.dbt_project_path, repo_dir)
+        if dbt_proj_dir is None or not dbt_proj_dir.exists():
+            searched = self._dbt_search_roots(repo_dir)
             raise FileNotFoundError(
-                f"dbt project not found at {dbt_proj_dir}. "
+                f"dbt project not found for dbt_project_path={self.dbt_project_path!r}. "
+                f"Tried: {', '.join(str(r / self.dbt_project_path) for r in searched)}. "
                 f"Check dbt_project_path in defs.yaml."
             )
 
@@ -5131,7 +5175,13 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         if self.dbt_target:
             project_kwargs["target"] = self.dbt_target
         if self.dbt_profiles_dir:
-            project_kwargs["profiles_dir"] = self.dbt_profiles_dir
+            # profiles_dir gets the same multi-root treatment so `dbt_profiles_dir:
+            # dbt/jaffle_shop` works whether the profile lives inside the cloned
+            # scripts repo (state.repo_path) or alongside the code location (CWD).
+            resolved_profiles = self._resolve_dbt_path(self.dbt_profiles_dir, repo_dir)
+            project_kwargs["profiles_dir"] = str(
+                resolved_profiles if resolved_profiles is not None else self.dbt_profiles_dir
+            )
 
         dbt_project = DbtProject(**project_kwargs)
         dbt_project.prepare_if_dev()
