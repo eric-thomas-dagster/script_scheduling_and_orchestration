@@ -175,10 +175,6 @@ file_overrides:
 
 > "The dbt DAG in Dagster — same shape as `dbt docs serve` would show, but embedded in the unified graph with Prefect assets. Upstream Prefect `@materialize` writing to a source? It shows up as an incoming edge to the source model. Downstream Prefect `@materialize` reading a mart? Outgoing edge. It all connects."
 
-**Point at** the `dbt_docs` asset (group `dbt_documentation`).
-
-> "One extra asset in this group: `dbt_docs`. When you materialize it, Dagster runs `dbt docs generate` against the project and stashes the docs index path in its metadata. Handy for cutting a docs bundle on a schedule without a separate CI job."
-
 ---
 
 ## Section 8 — "The unified graph" (1 min)

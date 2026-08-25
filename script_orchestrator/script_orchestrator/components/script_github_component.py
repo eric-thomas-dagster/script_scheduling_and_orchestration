@@ -5207,6 +5207,15 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         dbt_resource = DbtCliResource(project_dir=dbt_project)
 
         # --- core @dbt_assets covering all models (universal) ---
+        # We intentionally do NOT emit a `dbt_docs` asset that shells out to
+        # `dbt docs generate`. In Dagster+ Serverless the compute container is
+        # ephemeral — `target/index.html` gets written and immediately
+        # discarded when the run ends, with no volume or webserver to serve
+        # it from. Baking in a docs-generation asset that produces nothing
+        # visible is worse than not having it, because it looks useful in the
+        # catalog. If a customer wants docs regen, they can wire an @op that
+        # uploads the built docs to S3 / GitHub Pages / wherever they actually
+        # want them served from.
         @dbt_assets(manifest=dbt_project.manifest_path, name="dbt_assets")
         def all_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
             yield from (
@@ -5216,31 +5225,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 .fetch_column_metadata()
             )
 
-        # --- dbt docs asset (universal) ---
-        _dbt_proj_dir = dbt_proj_dir  # closure capture
-
-        @asset(
-            name="dbt_docs",
-            group_name="dbt_documentation",
-            kinds={"dbt"},
-            description=(
-                "Generates dbt HTML documentation. "
-                "Run `dbt docs serve` to browse locally."
-            ),
-        )
-        def dbt_docs_asset(
-            context: AssetExecutionContext, dbt: DbtCliResource
-        ) -> MaterializeResult:
-            yield from dbt.cli(["docs", "generate"], context=context).stream()
-            return MaterializeResult(
-                metadata={
-                    "docs_index": MetadataValue.path(
-                        str(_dbt_proj_dir / "target" / "index.html")
-                    )
-                }
-            )
-
-        universal_assets = [all_dbt_assets, dbt_docs_asset]
+        universal_assets = [all_dbt_assets]
         cosmos_assets: List = []
         cosmos_jobs: List = []
         cosmos_schedules: List = []

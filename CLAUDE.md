@@ -83,21 +83,29 @@ Workflow for pushing an upstream fix:
 The lock upgrade step is easy to forget; without it, the Docker build
 reuses the old cached SHA.
 
-## `_build_cosmos_dbt_defs` is misnamed
+## `_build_dbt_defs` (formerly `_build_cosmos_dbt_defs`)
 
-This function in `script_github_component.py` is triggered any time
-`dbt_project_path` is set, regardless of whether Airflow / Cosmos is
-enabled. It's the ONLY place that builds native `@dbt_assets` from
-`manifest.json`. On our Prefect-only deploy, it:
+Since `f42cb7b` this function is called any time `dbt_project_path` is
+set, and its Cosmos-migration half (scan + per-DAG jobs/schedules +
+`cosmos_migration_summary` asset) is gated on `self.airflow_enabled`.
+Prefect-only deploys get exactly the pure `@dbt_assets` expansion and
+nothing else — no phantom Cosmos summary asset.
 
-- runs `_scan_cosmos_dags(scripts_directory)` — returns `[]` (no Cosmos
-  DAG files under `prefect_examples/`);
-- builds `all_dbt_assets` — the real per-model dbt expansion we want;
-- also emits a `cosmos_migration_summary` asset that reports `0 replaced,
-  0 absorbed, 0 skipped` — dead weight on Prefect deploys.
+### Deliberately NOT emitting a `dbt_docs` asset
 
-Known follow-up: split the function so the pure `@dbt_assets` half is
-callable without dragging Cosmos-migration noise in.
+Prior versions of this file emitted a `dbt_docs_asset` that ran
+`dbt docs generate`. **Dropped in <followup>** because:
+
+- In Dagster+ Serverless the compute container is ephemeral; `target/
+  index.html` gets written and immediately discarded when the run ends.
+- No volume, no webserver, no upload — the docs are generated into the
+  void, but the asset in the catalog LOOKS meaningful. Worse than not
+  having it.
+- If a customer wants real docs regen, they wire an `@op` that uploads
+  the built docs to their actual serving location (S3 / GitHub Pages /
+  Netlify / etc.). We don't guess at their sink.
+
+Don't reintroduce it "for completeness" — it was intentionally cut.
 
 ## `dbt_project_path` resolution
 
