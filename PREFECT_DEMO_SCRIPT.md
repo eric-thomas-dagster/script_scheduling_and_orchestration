@@ -20,6 +20,25 @@ Click into **Assets → Global Asset Lineage**. Zoom out so all ~33 assets show 
 
 ---
 
+## Framing — "Four kinds of lineage in this graph" (1 min)
+
+Before diving in, name the four ways lineage shows up. Everything else references this frame.
+
+> "Everything you're about to see falls into one of four lineage flavors. Each one covers a different real-world Prefect migration scenario:"
+
+| # | Kind | Scope | Where it's declared |
+|---|---|---|---|
+| 1 | Explicit asset deps | between assets | `@materialize(asset_deps=[…])` in Prefect source |
+| 2 | AST-inferred asset deps | between assets, incl. through **same-file subflows** | Parser walks the flow body's call graph |
+| 3 | Operator-declared asset deps | between assets | `file_overrides.depends_on:` in defs.yaml — **no source change** |
+| 4 | Op-level data-flow edges | inside a single asset | Fake-Prefect-module trick — `@task` becomes `@op`, function-arg passing becomes real op DAG edges |
+
+> "The first three are Dagster's asset lineage. The fourth is the internal op graph inside each wrapper asset — same shape as your Prefect task DAG, with real data-flow edges from function argument passing, not just enqueue order."
+
+> "The reason four matters: a Prefect user's real repo is a MIX of these. Some scripts use the new `@materialize` primitives, some are classic `@flow`/`@task`. Some deps are declared in code, some are only known to the operator. All four have to work — and they do."
+
+---
+
 ## Section 1 — "Bring your Prefect repo, no rewrite" (2 min)
 
 **Click**: `prefect_model_training` (in the `ml_pipeline` group)
@@ -28,11 +47,13 @@ Click into **Assets → Global Asset Lineage**. Zoom out so all ~33 assets show 
 
 **Click the "Definition" tab** or expand the op graph.
 
-> "This is the important part. Every `@task` in the original Prefect flow is a first-class Dagster `@op` inside this asset. If the original had `@task(retries=3, retry_delay_seconds=10)` — and it did — those retry semantics are preserved as a Dagster `RetryPolicy` on the op. Your Prefect user's `@task` is running as a Dagster `@op` at execution time, keeping the retry-and-caching behavior they wrote."
+> "**This is lineage kind #4 — op-level data-flow edges inside the asset.** Every `@task` in the original Prefect flow is a first-class Dagster `@op` here. If the original had `@task(retries=3, retry_delay_seconds=10)` — and it did — those retry semantics are preserved as a Dagster `RetryPolicy` on the op."
+
+> "And crucially: these ops aren't just running in enqueue order. The parser AST-walks the flow body, finds where each task's return value feeds another task as an argument, and builds real data-flow edges in the op graph. So the shape you see here is the shape a Prefect user drew when they wrote `result_a = task_a(); result_b = task_b(result_a)`. Same task DAG, now visible as Dagster ops."
 
 **Click on** `prefect_model_inference` (in the same group).
 
-> "And there's the lineage. `model_inference` depends on `model_training`. I didn't fork the PrefectHQ demos repo to add that arrow — I said it in yaml on our side:"
+> "And now lineage kind #3 — operator-declared asset deps. `model_inference` depends on `model_training`. Nothing in the PrefectHQ demos source declares that; two independent scripts in a repo we don't own. But we know inference reads a model that training writes. I express that in yaml on our side:"
 
 ```yaml
 file_overrides:
@@ -40,7 +61,7 @@ file_overrides:
     depends_on: [model_training]
 ```
 
-> "For any script in a repo we don't own, we can layer on lineage, owners, kinds, group names — all without touching upstream code. That's the 'zero rewrite' promise made concrete."
+> "For any script in a repo we don't own, we can layer on lineage, owners, kinds, group names — all without touching upstream code. **This is the migration story that actually matters** — most Prefect estates aren't rewritten to use the new `@materialize` primitives. Kind #3 is how you make legacy Prefect fit into a unified graph. That's the 'zero rewrite' promise made concrete."
 
 ---
 
@@ -80,7 +101,7 @@ file_overrides:
 
 ---
 
-## Section 4 — "Implicit dependency inference" (2 min)
+## Section 4 — "Implicit dependency inference — including subflows" (2 min)
 
 **Search bar → "scores"**. Click `s3:/models/scores/parquet`.
 
@@ -88,9 +109,19 @@ file_overrides:
 
 **Show the source panel** (or bring up `materialize_implicit_deps_demo.py` in a second tab).
 
-> "In the flow, we just call one function from another — pass the result of `build_features(events)` into `train_scores(features)`. That call-graph shape IS the dependency graph. The parser walks the AST and builds Dagster deps edges from what the code already says."
+> "In the flow, we just call one function from another — pass the result of `build_features(events)` into `train_scores(features)`. That call-graph shape IS the dependency graph. The parser walks the AST and builds Dagster deps edges from what the code already says. **This is lineage kind #2 — AST-inferred asset deps.**"
+
+**Now, still in the source view, scroll down to `loading_subflow` in `materialize_full_demo.py`.**
+
+> "And it works through subflows too. Prefect users love subflows — one `@flow` calling another `@flow` for reuse. Look at this: the parent flow calls `loading_subflow()`, which internally does the write to `s3://lake/curated/customers/parquet`. The parser doesn't stop at the function boundary — it follows the call into the subflow, finds the `@materialize` inside, and stitches the dep back up to the parent's assets."
+
+> "So: 'call one function from another' works for tasks AND for subflows. Your Prefect users get to keep their modular flow patterns."
 
 > "This is the point: Prefect users don't have to duplicate their dep graph in a separate config to get lineage. The code IS the config."
+
+**What's NOT captured (be honest about limits):**
+
+> "Two things worth naming so nobody's surprised: (1) **cross-file subflows** — if a subflow lives in a different file, the AST walker can't follow the import chain. You either inline it, or you declare the dep in yaml using kind #3. (2) **Dynamic task calls** — `for name in dynamic_list: task(name)` won't infer per-item deps. Same fix — declare in yaml, or use `@materialize` explicitly with `asset_deps=[…]`."
 
 ---
 
@@ -143,6 +174,10 @@ file_overrides:
 **Go back to the lineage view — filter kind=dbt**.
 
 > "The dbt DAG in Dagster — same shape as `dbt docs serve` would show, but embedded in the unified graph with Prefect assets. Upstream Prefect `@materialize` writing to a source? It shows up as an incoming edge to the source model. Downstream Prefect `@materialize` reading a mart? Outgoing edge. It all connects."
+
+**Point at** the `dbt_docs` asset (group `dbt_documentation`).
+
+> "One extra asset in this group: `dbt_docs`. When you materialize it, Dagster runs `dbt docs generate` against the project and stashes the docs index path in its metadata. Handy for cutting a docs bundle on a schedule without a separate CI job."
 
 ---
 
@@ -212,10 +247,12 @@ file_overrides:
 
 ## Assets I most want people to remember
 
-| Asset | Why |
-|---|---|
-| `prefect_model_inference` ← `prefect_model_training` | The "we can add deps without touching the source repo" story |
-| `snowflake:/prod/ANALYTICS/MARTS/CUSTOMER_METRICS` | The `[dbt, prefect]` kind combo — cross-tool assets |
-| Any jaffle_shop model (e.g. `customers` or `orders`) | The "opaque prefect_dbt → per-model expansion" story |
-| `s3:/models/scores/parquet` | Implicit dep chain without asset_deps= |
-| Anything with a freshness widget | Auto-derived SLA from prefect.yaml cron |
+| Asset | Which lineage kind | Why |
+|---|---|---|
+| `prefect_model_inference` ← `prefect_model_training` | #3 operator-declared | "Add deps in yaml without touching the source repo" — the migration story |
+| `snowflake:/prod/ANALYTICS/MARTS/CUSTOMER_METRICS` | #1 explicit | `[dbt, prefect]` kind combo — cross-tool assets |
+| Any jaffle_shop model (e.g. `customers` or `orders`) | #1 (via manifest.json) | Opaque `PrefectDbtRunner` → per-model expansion |
+| `s3:/models/scores/parquet` | #2 AST-inferred | Implicit dep chain without `asset_deps=` |
+| `s3:/lake/curated/customers/parquet` | #2 through subflow | AST walker follows same-file subflow calls |
+| Anything with a freshness widget | — | Auto-derived SLA from `prefect.yaml` cron |
+| Any classic `@flow` op graph | #4 op-level | `@task` → `@op` with real data-flow edges from function-arg passing |

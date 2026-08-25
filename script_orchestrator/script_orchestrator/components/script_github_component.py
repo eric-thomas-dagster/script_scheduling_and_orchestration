@@ -698,7 +698,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
     )
 
     # Internal flag — set automatically when dbt_project_path is configured.
-    # Tells _discover_scripts to leave Cosmos files for _build_cosmos_dbt_defs.
+    # Tells _discover_scripts to leave Cosmos files for _build_dbt_defs.
     skip_cosmos_dags: bool = PydanticField(
         default=False,
         description="Internal — auto-set to True when dbt_project_path is configured.",
@@ -1725,8 +1725,8 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         # and merge them in.  The repo is already cloned (state.repo_path exists).
         if self.dbt_project_path and state.repo_path:
             try:
-                cosmos_defs = self._build_cosmos_dbt_defs(Path(state.repo_path))
-                return Definitions.merge(script_defs, cosmos_defs)
+                dbt_defs = self._build_dbt_defs(Path(state.repo_path))
+                return Definitions.merge(script_defs, dbt_defs)
             except Exception as exc:
                 logger.warning(
                     "Cosmos/dbt setup failed — returning script definitions only. "
@@ -1832,7 +1832,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 continue
 
             # Skip files handled natively via dagster-dbt:
-            #   - Cosmos DAGs (import cosmos)  → routed via _build_cosmos_dbt_defs
+            #   - Cosmos DAGs (import cosmos)  → routed via _build_dbt_defs
             #   - Prefect flows that call dbt through prefect_dbt → same treatment,
             #     since Prefect wraps the whole dbt project as one opaque task
             #     while Dagster gives you one asset per model with full lineage.
@@ -5150,8 +5150,27 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 return attempt
         return None
 
-    def _build_cosmos_dbt_defs(self, repo_dir: Path) -> "Definitions":
-        """Build native @dbt_assets + jobs for all applicable Cosmos DAGs."""
+    def _build_dbt_defs(self, repo_dir: Path) -> "Definitions":
+        """Build native @dbt_assets + dbt_docs_asset, plus (only when Airflow /
+        Cosmos is enabled) per-Cosmos-DAG jobs, schedules, and a migration
+        summary asset.
+
+        The pure-dbt half — one Dagster asset per dbt model (with lineage from
+        manifest.json, columns from catalog.json, tests as asset checks) plus
+        a `dbt_docs` asset that runs `dbt docs generate` — runs any time
+        `dbt_project_path` is set. This is the piece that turns an opaque
+        `PrefectDbtRunner` (or a Cosmos `DbtDag`, or a bare-metal
+        `dbt.cli(['build'])` call) into per-model visibility.
+
+        The Cosmos-migration half — scanning `scripts_directory` for `.py`
+        files that import `cosmos`, classifying each as replaced/absorbed/
+        skipped, emitting one Dagster job or schedule per replaced DAG, plus
+        a `cosmos_migration_summary` asset that reports the classification —
+        is only meaningful when the source repo actually has Cosmos DAGs.
+        Prefect-only deploys don't have any, so we skip that whole overlay to
+        avoid emitting a phantom `cosmos_migration_summary` asset that reads
+        "0 replaced, 0 absorbed, 0 skipped".
+        """
         try:
             from dagster_dbt import DbtCliResource, DbtProject, dbt_assets
             from dagster_dbt import build_schedule_from_dbt_selection, build_dbt_asset_selection
@@ -5187,16 +5206,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         dbt_project.prepare_if_dev()
         dbt_resource = DbtCliResource(project_dir=dbt_project)
 
-        # --- scan and classify Cosmos DAG files ---
-        dags_dir = repo_dir / self.scripts_directory
-        base_url = f"{(self.repo_url or '').rstrip('/')}/blob/{self.repo_branch}/{self.scripts_directory}"
-        records = self._scan_cosmos_dags(dags_dir, base_url)
-
-        replaced = [r for r in records if r["action"] == "replaced"]
-        absorbed = [r for r in records if r["action"] == "absorbed"]
-        skipped  = [r for r in records if r["action"] in ("skipped", "not_cosmos")]
-
-        # --- core @dbt_assets covering all models ---
+        # --- core @dbt_assets covering all models (universal) ---
         @dbt_assets(manifest=dbt_project.manifest_path, name="dbt_assets")
         def all_dbt_assets(context: AssetExecutionContext, dbt: DbtCliResource):
             yield from (
@@ -5206,39 +5216,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 .fetch_column_metadata()
             )
 
-        # --- one job (or schedule) per replaced Cosmos DAG ---
-        all_jobs = []
-        all_schedules = []
-
-        for rec in replaced:
-            job_name = f"cosmos__{rec['stem']}"
-            cron = self._normalise_cosmos_schedule(rec["schedule"])
-            dbt_sel = rec["dbt_select"]
-
-            if cron:
-                sched = build_schedule_from_dbt_selection(
-                    [all_dbt_assets],
-                    job_name=job_name,
-                    cron_schedule=cron,
-                    dbt_select=dbt_sel or "*",
-                    tags={"cosmos_source_dag": rec["stem"]},
-                )
-                all_schedules.append(sched)
-            else:
-                sel = (
-                    build_dbt_asset_selection([all_dbt_assets], dbt_select=dbt_sel)
-                    if dbt_sel
-                    else AssetSelection.assets(all_dbt_assets)
-                )
-                job = define_asset_job(
-                    name=job_name,
-                    selection=sel,
-                    description=rec["description"],
-                    tags={"cosmos_source_dag": rec["stem"]},
-                )
-                all_jobs.append(job)
-
-        # --- dbt docs asset (replaces dbt_docs.py Cosmos DAG) ---
+        # --- dbt docs asset (universal) ---
         _dbt_proj_dir = dbt_proj_dir  # closure capture
 
         @asset(
@@ -5247,7 +5225,6 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             kinds={"dbt"},
             description=(
                 "Generates dbt HTML documentation. "
-                "Replaces the dbt_docs.py Cosmos DAG. "
                 "Run `dbt docs serve` to browse locally."
             ),
         )
@@ -5263,66 +5240,115 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                 }
             )
 
-        # --- migration summary asset ---
-        _replaced_map = {r["stem"]: r["description"] for r in replaced}
-        _absorbed_map = {r["stem"]: r["action_note"]  for r in absorbed}
-        _skipped_map  = {r["stem"]: r["action_note"]  for r in skipped}
-        _total        = len(records)
+        universal_assets = [all_dbt_assets, dbt_docs_asset]
+        cosmos_assets: List = []
+        cosmos_jobs: List = []
+        cosmos_schedules: List = []
 
-        @asset(
-            name="cosmos_migration_summary",
-            group_name="cosmos_metadata",
-            description="Materialise to see the full Cosmos → Dagster migration report.",
-            metadata={
-                "replaced":      MetadataValue.int(len(replaced)),
-                "absorbed":      MetadataValue.int(len(absorbed)),
-                "skipped":       MetadataValue.int(len(skipped)),
-                "replaced_dags": MetadataValue.json(_replaced_map),
-                "absorbed_dags": MetadataValue.json(_absorbed_map),
-                "skipped_dags":  MetadataValue.json(_skipped_map),
-            },
-        )
-        def cosmos_migration_summary(context: AssetExecutionContext) -> MaterializeResult:
-            w = 64
-            context.log.info("=" * w)
-            context.log.info("Cosmos → Dagster Migration Report")
-            context.log.info(
-                f"Scanned: {_total}   "
-                f"Replaced: {len(replaced)}   "
-                f"Absorbed: {len(absorbed)}   "
-                f"Skipped: {len(skipped)}"
-            )
-            context.log.info("")
-            context.log.info("REPLACED — Cosmos DAG can be disabled in Airflow")
-            context.log.info("-" * w)
-            for stem, desc in _replaced_map.items():
-                context.log.info(f"  ✓ {stem}  →  job: cosmos__{stem}")
-                context.log.info(f"    {desc}")
-            context.log.info("")
-            context.log.info("ABSORBED — Dagster handles this as a built-in primitive")
-            context.log.info("-" * w)
-            for stem, note in _absorbed_map.items():
-                context.log.info(f"  ⊕ {stem}")
-                context.log.info(f"    {note}")
-            context.log.info("")
-            context.log.info("SKIPPED — Infrastructure-specific, not applicable")
-            context.log.info("-" * w)
-            for stem, note in _skipped_map.items():
-                context.log.info(f"  ✗ {stem}")
-                context.log.info(f"    {note}")
-            context.log.info("=" * w)
-            return MaterializeResult(
+        # --- Cosmos-migration overlay (Airflow only) ---------------------
+        # The scan is cheap when there are no Cosmos DAGs, but the migration
+        # summary asset still shows up in the catalog reporting "0 replaced".
+        # That's noise on non-Airflow deploys, so we gate the entire overlay
+        # on airflow_enabled=True.
+
+        if self.airflow_enabled:
+            dags_dir = repo_dir / self.scripts_directory
+            base_url = f"{(self.repo_url or '').rstrip('/')}/blob/{self.repo_branch}/{self.scripts_directory}"
+            records = self._scan_cosmos_dags(dags_dir, base_url)
+
+            replaced = [r for r in records if r["action"] == "replaced"]
+            absorbed = [r for r in records if r["action"] == "absorbed"]
+            skipped  = [r for r in records if r["action"] in ("skipped", "not_cosmos")]
+
+            for rec in replaced:
+                job_name = f"cosmos__{rec['stem']}"
+                cron = self._normalise_cosmos_schedule(rec["schedule"])
+                dbt_sel = rec["dbt_select"]
+
+                if cron:
+                    sched = build_schedule_from_dbt_selection(
+                        [all_dbt_assets],
+                        job_name=job_name,
+                        cron_schedule=cron,
+                        dbt_select=dbt_sel or "*",
+                        tags={"cosmos_source_dag": rec["stem"]},
+                    )
+                    cosmos_schedules.append(sched)
+                else:
+                    sel = (
+                        build_dbt_asset_selection([all_dbt_assets], dbt_select=dbt_sel)
+                        if dbt_sel
+                        else AssetSelection.assets(all_dbt_assets)
+                    )
+                    job = define_asset_job(
+                        name=job_name,
+                        selection=sel,
+                        description=rec["description"],
+                        tags={"cosmos_source_dag": rec["stem"]},
+                    )
+                    cosmos_jobs.append(job)
+
+            _replaced_map = {r["stem"]: r["description"] for r in replaced}
+            _absorbed_map = {r["stem"]: r["action_note"]  for r in absorbed}
+            _skipped_map  = {r["stem"]: r["action_note"]  for r in skipped}
+            _total        = len(records)
+
+            @asset(
+                name="cosmos_migration_summary",
+                group_name="cosmos_metadata",
+                description="Materialise to see the full Cosmos → Dagster migration report.",
                 metadata={
+                    "replaced":      MetadataValue.int(len(replaced)),
+                    "absorbed":      MetadataValue.int(len(absorbed)),
+                    "skipped":       MetadataValue.int(len(skipped)),
                     "replaced_dags": MetadataValue.json(_replaced_map),
                     "absorbed_dags": MetadataValue.json(_absorbed_map),
                     "skipped_dags":  MetadataValue.json(_skipped_map),
-                }
+                },
             )
+            def cosmos_migration_summary(context: AssetExecutionContext) -> MaterializeResult:
+                w = 64
+                context.log.info("=" * w)
+                context.log.info("Cosmos → Dagster Migration Report")
+                context.log.info(
+                    f"Scanned: {_total}   "
+                    f"Replaced: {len(replaced)}   "
+                    f"Absorbed: {len(absorbed)}   "
+                    f"Skipped: {len(skipped)}"
+                )
+                context.log.info("")
+                context.log.info("REPLACED — Cosmos DAG can be disabled in Airflow")
+                context.log.info("-" * w)
+                for stem, desc in _replaced_map.items():
+                    context.log.info(f"  ✓ {stem}  →  job: cosmos__{stem}")
+                    context.log.info(f"    {desc}")
+                context.log.info("")
+                context.log.info("ABSORBED — Dagster handles this as a built-in primitive")
+                context.log.info("-" * w)
+                for stem, note in _absorbed_map.items():
+                    context.log.info(f"  ⊕ {stem}")
+                    context.log.info(f"    {note}")
+                context.log.info("")
+                context.log.info("SKIPPED — Infrastructure-specific, not applicable")
+                context.log.info("-" * w)
+                for stem, note in _skipped_map.items():
+                    context.log.info(f"  ✗ {stem}")
+                    context.log.info(f"    {note}")
+                context.log.info("=" * w)
+                return MaterializeResult(
+                    metadata={
+                        "replaced_dags": MetadataValue.json(_replaced_map),
+                        "absorbed_dags": MetadataValue.json(_absorbed_map),
+                        "skipped_dags":  MetadataValue.json(_skipped_map),
+                    }
+                )
+
+            cosmos_assets.append(cosmos_migration_summary)
 
         return Definitions(
-            assets=[all_dbt_assets, dbt_docs_asset, cosmos_migration_summary],
-            jobs=all_jobs,
-            schedules=all_schedules,
+            assets=universal_assets + cosmos_assets,
+            jobs=cosmos_jobs,
+            schedules=cosmos_schedules,
             resources={"dbt": dbt_resource},
         )
 
