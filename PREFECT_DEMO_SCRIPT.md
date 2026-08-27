@@ -29,7 +29,7 @@ Before diving in, name the four ways lineage shows up. Everything else reference
 | # | Kind | Scope | Where it's declared |
 |---|---|---|---|
 | 1 | Explicit asset deps | between assets | `@materialize(asset_deps=[…])` in Prefect source |
-| 2 | AST-inferred asset deps | between assets, incl. through **same-file subflows** | Parser walks the flow body's call graph |
+| 2 | AST-inferred asset deps | between assets, incl. through **same-file subflows** AND **cross-file @materialize** | Parser walks the flow body's call graph and follows top-level imports |
 | 3 | Operator-declared asset deps | between assets | `file_overrides.depends_on:` in defs.yaml — **no source change** |
 | 4 | Op-level data-flow edges | inside a single asset | Fake-Prefect-module trick — `@task` becomes `@op`, function-arg passing becomes real op DAG edges |
 
@@ -117,11 +117,17 @@ file_overrides:
 
 > "So: 'call one function from another' works for tasks AND for subflows. Your Prefect users get to keep their modular flow patterns."
 
-> "This is the point: Prefect users don't have to duplicate their dep graph in a separate config to get lineage. The code IS the config."
+**And it works across files too.** Bring up `materialize_cross_file_demo.py`, point at the `from materialize_cross_file_helpers import build_feature_matrix` line at the top, then scroll down to `cross_file_churn_pipeline`.
+
+> "Look at this pipeline: `ingest_raw_events() → build_feature_matrix(events) → score_churn(features)`. The middle hop, `build_feature_matrix`, isn't defined in this file. It lives in `materialize_cross_file_helpers.py` — a shared helper module the ML platform team publishes for every model script to reuse."
+
+> "The parser follows the import. It reads `helpers.py`, finds the `@materialize` there, and treats it as if it were in the caller — so the call-graph walker can chain `ingest_raw_events()`'s output through the imported function into `score_churn`'s input. The lineage arrow in the UI crosses the file boundary. Zero `asset_deps=[]`. Zero yaml overrides."
+
+> "This is the point: Prefect users don't have to duplicate their dep graph in a separate config to get lineage. The code IS the config — and 'the code' can span multiple files."
 
 **What's NOT captured (be honest about limits):**
 
-> "Two things worth naming so nobody's surprised: (1) **cross-file subflows** — if a subflow lives in a different file, the AST walker can't follow the import chain. You either inline it, or you declare the dep in yaml using kind #3. (2) **Dynamic task calls** — `for name in dynamic_list: task(name)` won't infer per-item deps. Same fix — declare in yaml, or use `@materialize` explicitly with `asset_deps=[…]`."
+> "Two things worth naming so nobody's surprised: (1) **cross-file subflows** — importing a `@flow` from another file and calling it works for the parser's analysis, but if the subflow's *own* `@materialize` needs a dep from the caller's context, that dep won't be emitted (the target asset lives in the other file). Cross-file @materialize called DIRECTLY works fully; cross-file subflow-wrapped @materialize still needs `file_overrides.depends_on` (kind #3) as the escape hatch. (2) **Dynamic task calls** — `for name in dynamic_list: task(name)` won't infer per-item deps. Same fix — declare in yaml, or use `@materialize` explicitly with `asset_deps=[…]`."
 
 ---
 
@@ -250,5 +256,6 @@ file_overrides:
 | Any jaffle_shop model (e.g. `customers` or `orders`) | #1 (via manifest.json) | Opaque `PrefectDbtRunner` → per-model expansion |
 | `s3:/models/scores/parquet` | #2 AST-inferred | Implicit dep chain without `asset_deps=` |
 | `s3:/lake/curated/customers/parquet` | #2 through subflow | AST walker follows same-file subflow calls |
+| `s3://prod/lake/models/scores.parquet` | #2 across files | Import boundary crossed: `build_feature_matrix` lives in `materialize_cross_file_helpers.py` |
 | Anything with a freshness widget | — | Auto-derived SLA from `prefect.yaml` cron |
 | Any classic `@flow` op graph | #4 op-level | `@task` → `@op` with real data-flow edges from function-arg passing |

@@ -153,14 +153,25 @@ class PrefectParser(BaseParser):
 
         return FakePrefectModule()
 
-    def parse_assets(self, script_path: Path) -> Dict[str, Any]:
+    def parse_assets(
+        self, script_path: Path, repo_root: Optional[Path] = None
+    ) -> Dict[str, Any]:
         """Parse Prefect script for @materialize-decorated asset declarations.
+
+        Args:
+          script_path: absolute path to the script.
+          repo_root: absolute path to the cloned repo root. When set, the
+            parser follows `from X import subflow` statements to sibling
+            .py files under repo_root and treats their @materialize / @flow
+            definitions as if declared in the current script — enabling
+            cross-file lineage inference for @materialize called directly
+            from an imported module.
 
         Returns {"materialized": [...], "external": [...]}. Empty lists when
         no @materialize decorators are found. See
         `prefect_asset_support.parse_prefect_assets` for entry shapes.
         """
-        return parse_prefect_assets(script_path)
+        return parse_prefect_assets(script_path, repo_root=repo_root)
 
     def create_materialize_multi_asset(
         self,

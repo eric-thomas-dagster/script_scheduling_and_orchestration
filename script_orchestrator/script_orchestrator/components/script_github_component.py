@@ -2638,7 +2638,16 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             # metadata + asset_deps edges; deep-ish: runtime add_asset_metadata
             # captured via a shim and yielded as MaterializeResult).
             try:
-                prefect_assets = self.prefect_parser.parse_assets(script_info.script_path)
+                # Pass repo_root so cross-file @materialize imports resolve
+                # (e.g. `from helpers import build_thing` in a script). The
+                # parser follows the import into helpers.py, treats its
+                # @materialize functions as available in the caller's
+                # namespace, and the flow-body walker infers real
+                # asset-to-asset dep edges across file boundaries.
+                _cross_file_root = Path(repo_path) if repo_path else None
+                prefect_assets = self.prefect_parser.parse_assets(
+                    script_info.script_path, repo_root=_cross_file_root
+                )
             except Exception as e:
                 logger.debug(f"parse_assets failed for {script_info.name}: {e}")
                 prefect_assets = {"materialized": [], "external": []}

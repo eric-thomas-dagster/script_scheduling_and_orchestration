@@ -60,6 +60,212 @@ def _literal_or_none(node: ast.AST) -> Any:
         return None
 
 
+def _find_module_file(base: Path, module_name: str) -> Optional[Path]:
+    """Given a base dir and a dotted module name, return the .py that Python
+    would import (either `foo/bar.py` or `foo/bar/__init__.py`), or None if
+    nothing matches. Does NOT walk sys.path — only checks under `base`."""
+    if not module_name:
+        return None
+    parts = module_name.split(".")
+    candidate = base
+    for part in parts:
+        candidate = candidate / part
+    py_file = candidate.with_suffix(".py")
+    if py_file.is_file():
+        return py_file
+    init_file = candidate / "__init__.py"
+    if init_file.is_file():
+        return init_file
+    return None
+
+
+def _resolve_import_to_path(
+    module_name: str,
+    caller_file: Path,
+    level: int,
+    repo_root: Path,
+) -> Optional[Path]:
+    """Resolve an `ImportFrom` node to a .py file inside `repo_root`.
+
+    Handles both absolute (`from x.y import foo`, level=0) and relative
+    (`from .subflows import foo`, level>0) imports.
+
+    Search strategy for absolute imports: from the caller's directory
+    upward to repo_root. Anything not resolvable under the repo tree
+    returns None — stdlib and site-packages imports are deliberately
+    ignored, since the cross-file feature only follows first-party
+    Prefect code that lives with the scripts.
+    """
+    if level > 0:
+        base = caller_file.parent
+        for _ in range(level - 1):
+            base = base.parent
+        # `from . import foo` (level=1, empty module) — the imported name
+        # itself is the submodule; we don't have a way to guess which .py
+        # file it resolves to from just the ImportFrom node here (we'd
+        # need to look at each alias.name). Skip for now; callers
+        # commonly use `from .subflows import foo` which has module_name.
+        if not module_name:
+            return None
+        try:
+            base.resolve().relative_to(repo_root.resolve())
+        except ValueError:
+            return None
+        return _find_module_file(base, module_name)
+
+    if not module_name:
+        return None
+
+    caller_dir = caller_file.parent.resolve()
+    repo_resolved = repo_root.resolve()
+    d = caller_dir
+    while True:
+        found = _find_module_file(d, module_name)
+        if found is not None:
+            # Confirm the resolved file is inside the repo tree —
+            # otherwise we may have wandered into a parent above the repo
+            # via `..` traversal (`caller_dir` could be outside).
+            try:
+                found.resolve().relative_to(repo_resolved)
+            except ValueError:
+                return None
+            return found
+        if d == repo_resolved:
+            break
+        parent = d.parent
+        if parent == d:
+            break
+        d = parent
+    return None
+
+
+def _extract_fn_to_uris(
+    tree: ast.Module, asset_bindings: Dict[str, Dict[str, Any]]
+) -> Dict[str, List[str]]:
+    """Return {function_name: [uri, ...]} for every @materialize function in
+    the module. Deliberately lighter than the inline extraction in
+    `parse_prefect_assets` — cross-file callees only need the caller to
+    know 'this function produces these URIs', not the retry / tag / dep
+    metadata that lives on the emitted Dagster asset itself.
+    """
+    fn_to_uris: Dict[str, List[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for dec in node.decorator_list:
+            call = dec if isinstance(dec, ast.Call) else None
+            if call is None:
+                continue
+            func_name = (
+                call.func.id if isinstance(call.func, ast.Name)
+                else call.func.attr if isinstance(call.func, ast.Attribute)
+                else None
+            )
+            if func_name != "materialize":
+                continue
+            uris: List[str] = []
+            for arg in call.args:
+                uri = _resolve_asset_ref(arg, asset_bindings)
+                if uri:
+                    uris.append(uri)
+            fn_to_uris[node.name] = uris
+            break
+    return fn_to_uris
+
+
+def _cross_file_discoveries(
+    tree: ast.Module,
+    script_path: Path,
+    repo_root: Path,
+    visited: Optional[set] = None,
+    depth: int = 0,
+    max_depth: int = 3,
+) -> Tuple[Dict[str, List[str]], Dict[str, Dict[str, Any]]]:
+    """Walk `tree`'s top-level `from X import Y` statements, resolve each
+    import to a .py file under `repo_root`, parse that file, and pull its
+    `@materialize` / `@flow` definitions out keyed by the LOCAL imported
+    name. The result is safe to merge into the caller's `fn_to_uris`
+    and `flow_info`: because the keys use the local name, the AST
+    call-graph walker treats `from subflows import loading_subflow`
+    followed by `loading_subflow()` the same way it treats a same-file
+    subflow.
+
+    Bounds:
+      - `repo_root`: only files whose resolved path lives under this
+        directory are followed. Stdlib and site-packages are ignored.
+      - `max_depth`: caps transitive follow-chains. Default 3 covers
+        realistic Prefect layouts (script → subflows → shared helpers)
+        without pathological recursion.
+      - `visited`: the set of already-parsed absolute paths, prevents
+        A→B→A cycles and duplicate work when the same helper is
+        imported by multiple modules.
+
+    Aliased imports (`from x import y as z`) key the discovery under
+    the local alias. Star imports (`from x import *`) copy everything.
+    """
+    if depth >= max_depth:
+        return {}, {}
+
+    if visited is None:
+        visited = {script_path.resolve()}
+
+    extra_fn_to_uris: Dict[str, List[str]] = {}
+    extra_flow_info: Dict[str, Dict[str, Any]] = {}
+
+    for stmt in tree.body:
+        if not isinstance(stmt, ast.ImportFrom):
+            continue
+        target_file = _resolve_import_to_path(
+            stmt.module or "", script_path, stmt.level, repo_root
+        )
+        if target_file is None:
+            continue
+        resolved = target_file.resolve()
+        if resolved in visited:
+            continue
+        visited.add(resolved)
+
+        try:
+            with open(target_file, "r") as fh:
+                sub_tree = ast.parse(fh.read(), filename=str(target_file))
+        except Exception as e:
+            logger.debug(f"Could not parse imported module {target_file}: {e}")
+            continue
+
+        # Recurse: pull cross-file discoveries FROM this sub-file too, so
+        # a chain script.py → subflows.py → deep_helpers.py all resolves.
+        sub_extra_uris, sub_extra_info = _cross_file_discoveries(
+            sub_tree, target_file, repo_root, visited, depth + 1, max_depth
+        )
+
+        # Compute sub-file's own fn_to_uris + flow_info. When analyzing
+        # sub-file's flows, its own @materialize fns AND any nested
+        # cross-file imports need to be visible so subflow param->consumer
+        # tracking works transitively.
+        sub_bindings = _extract_asset_bindings(sub_tree)
+        sub_fn_to_uris = _extract_fn_to_uris(sub_tree, sub_bindings)
+        merged_sub_fn_to_uris = {**sub_extra_uris, **sub_fn_to_uris}
+        sub_flow_info = _analyze_flows(sub_tree, merged_sub_fn_to_uris)
+        merged_sub_flow_info = {**sub_extra_info, **sub_flow_info}
+
+        # Remap discoveries under the LOCAL imported name(s).
+        for alias in stmt.names:
+            orig_name = alias.name
+            local_name = alias.asname or alias.name
+            if orig_name == "*":
+                for k, v in merged_sub_fn_to_uris.items():
+                    extra_fn_to_uris.setdefault(k, v)
+                for k, v in merged_sub_flow_info.items():
+                    extra_flow_info.setdefault(k, v)
+                continue
+            if orig_name in merged_sub_fn_to_uris:
+                extra_fn_to_uris[local_name] = merged_sub_fn_to_uris[orig_name]
+            if orig_name in merged_sub_flow_info:
+                extra_flow_info[local_name] = merged_sub_flow_info[orig_name]
+
+    return extra_fn_to_uris, extra_flow_info
+
+
 def _extract_asset_bindings(tree: ast.Module) -> Dict[str, Dict[str, Any]]:
     """Find module-scope `<var> = Asset(...)` bindings.
 
@@ -156,8 +362,23 @@ def _resolve_asset_ref(
     return None
 
 
-def parse_prefect_assets(script_path: Path) -> Dict[str, Any]:
+def parse_prefect_assets(
+    script_path: Path,
+    repo_root: Optional[Path] = None,
+) -> Dict[str, Any]:
     """Parse a Prefect script and return detected @materialize + external assets.
+
+    Args:
+      script_path: absolute path to the .py script being parsed.
+      repo_root: absolute path to the cloned repo root. When set, the parser
+        walks `from X import subflow` statements at the top of the script,
+        resolves them to sibling .py files under `repo_root`, parses those
+        files, and treats their `@flow` / `@materialize` definitions as if
+        they were defined in the current file. This enables cross-file
+        subflow lineage — the AST call-graph walker follows `subflow()` into
+        the imported module and stitches the inner `@materialize` deps back
+        up to the caller. Left unset for backwards compatibility (behaviour
+        matches the previous same-file-only walker).
 
     Returns:
       {
@@ -280,9 +501,33 @@ def parse_prefect_assets(script_path: Path) -> Dict[str, Any]:
                 "asserts": _extract_assert_checks(node),
             })
 
+    # ── Pass 1.5: resolve cross-file subflow imports ─────────────────────────
+    # `from subflows import loading_subflow` — parse subflows.py under
+    # repo_root, extract its @materialize / @flow definitions, and expose
+    # them under the local imported name so the call-graph walker below
+    # follows `loading_subflow()` into the imported module the same way it
+    # follows a same-file subflow. Requires `repo_root` — without it, the
+    # cross-file feature stays off (preserves old behaviour for callers
+    # that haven't opted in).
+
+    extra_fn_to_uris: Dict[str, List[str]] = {}
+    extra_flow_info: Dict[str, Dict[str, Any]] = {}
+    if repo_root is not None:
+        try:
+            extra_fn_to_uris, extra_flow_info = _cross_file_discoveries(
+                tree, script_path, repo_root
+            )
+        except Exception as e:  # never fail the whole parse over cross-file
+            logger.debug(f"Cross-file subflow resolution failed for {script_path}: {e}")
+
+    # Local defs shadow imported ones (Python semantics: local name wins).
+    merged_fn_to_uris: Dict[str, List[str]] = {**extra_fn_to_uris, **fn_to_uris}
+
     # ── Pass 2: walk @flow bodies to infer implicit deps via call graph ──────
 
-    inferred_deps_per_fn = _infer_deps_from_flows(tree, fn_to_uris)
+    inferred_deps_per_fn = _infer_deps_from_flows(
+        tree, merged_fn_to_uris, extra_flow_info=extra_flow_info
+    )
 
     # ── Emit materialized entries (explicit ∪ inferred deps, dedup) ──────────
 
@@ -341,7 +586,9 @@ def parse_prefect_assets(script_path: Path) -> Dict[str, Any]:
 
 
 def _infer_deps_from_flows(
-    tree: ast.Module, fn_to_uris: Dict[str, List[str]]
+    tree: ast.Module,
+    fn_to_uris: Dict[str, List[str]],
+    extra_flow_info: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, List[str]]:
     """Walk @flow function bodies to infer implicit asset-to-asset deps.
 
@@ -369,6 +616,13 @@ def _infer_deps_from_flows(
             a = make_a()
             b = subflow(a)     # → same edge inferred through the subflow
 
+    Args:
+      extra_flow_info: pre-computed flow_info entries for @flow functions
+        that live in OTHER files but are imported into this module (see
+        `_cross_file_discoveries`). Keyed by the local imported name so
+        the callee-name lookups below hit naturally. Local defs from
+        `tree` shadow imports of the same name (Python semantics).
+
     Returns {materialize_function_name → [uri, ...]} of extra deps.
     """
     if not fn_to_uris:
@@ -376,6 +630,10 @@ def _infer_deps_from_flows(
 
     # Discover @flow signatures + return producers + parameter usage.
     flow_info = _analyze_flows(tree, fn_to_uris)
+    if extra_flow_info:
+        for name, info in extra_flow_info.items():
+            # setdefault: local wins, imported only fills gaps
+            flow_info.setdefault(name, info)
 
     result: Dict[str, List[str]] = {}
 

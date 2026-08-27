@@ -144,14 +144,48 @@ about lineage:
 1. **Explicit asset deps** — declared in Prefect source via
    `@materialize(asset_deps=[…])`.
 2. **AST-inferred asset deps** — parser walks the flow body call graph;
-   works through same-file subflows. Cross-file subflows are a known
-   gap; being worked on.
+   works through same-file subflows AND cross-file @materialize called
+   directly via `from x import fn`. Cross-file @materialize called
+   *through* a subflow (the subflow lives in file A, the caller's
+   context comes from file B) is a known partial-support case — the
+   analysis runs but the dep can't attach because the consumer asset
+   isn't owned by the caller. See "Cross-file lineage gap" below.
 3. **Operator-declared asset deps** — `file_overrides.depends_on:` in
    `defs.yaml`. No source-repo change required. This is the migration
    story that matters most for real Prefect estates.
 4. **Op-level data-flow edges** — inside a single wrapper asset,
    `@task` → `@op`; function-argument passing becomes real op DAG
    edges via a fake-Prefect-module monkey-patch.
+
+## Cross-file lineage gap (two-pass follow-up)
+
+The cross-file work shipped in prefect_asset_support.py handles the
+common Prefect idiom: `from helpers import build_thing`, then call
+`build_thing()` inside a `@flow`. The AST call-graph walker follows
+the import and attaches the imported @materialize's URI as a dep on
+the caller's own @materialize output.
+
+The remaining gap: cross-file **subflows** — the caller imports a
+`@flow` (not a `@materialize`), and the subflow's internal
+`@materialize` consumes the arg the caller passes. The parser DOES
+discover this via `_cross_file_discoveries` (extra_flow_info exposes
+the subflow's `param_consumers`), and the dep IS computed inside
+`_infer_deps_from_flows`. But the target asset (the subflow's own
+@materialize) isn't in the caller's `materialized_raw` — it lives in
+the imported file. Result: the analysis runs, produces the right
+answer, and then discards it because there's no local asset to attach
+it to.
+
+Fix requires a **two-pass emit** at the ScriptGithubComponent level:
+1. First pass every script with `repo_root` set to build a global
+   `{asset_uri → List[extra_dep_uri]}` map from every caller's
+   discovered cross-file inferred deps.
+2. Second pass: when emitting each script's multi_asset, look up any
+   of its own URIs in the global map and merge those extra deps into
+   the AssetSpec.
+
+Until then, the workaround for cross-file subflow patterns is kind
+#3 (`file_overrides.depends_on` in defs.yaml).
 
 ## Things the user has corrected me on
 
