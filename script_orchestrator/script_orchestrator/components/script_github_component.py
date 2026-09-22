@@ -1568,9 +1568,15 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                     state.scripts = self._discover_scripts(scripts_dir)
                     logger.info(f"Discovered {len(state.scripts)} scripts from GitHub")
 
-            # Install dependencies from the scripts directory if found
+            # Install dependencies from the scripts directory if found.
+            # Use `scripts_dir` directly (already resolved by whichever
+            # branch ran above) rather than re-joining `state.repo_path` +
+            # `self.scripts_directory` — in the `use_local` branch,
+            # `state.repo_path` is already `scripts_dir.parent`, so
+            # re-appending the full (possibly multi-segment)
+            # `scripts_directory` doubles part of the path and 404s.
             if state.scripts and state.repo_path:
-                self._install_script_dependencies(Path(state.repo_path) / self.scripts_directory)
+                self._install_script_dependencies(scripts_dir)
 
         except Exception as e:
             state.error = str(e)
@@ -1610,12 +1616,23 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
         all_schedules = []
         all_asset_checks = []
 
-        # Build script assets
+        # First pass: resolve cross-file Prefect subflow lineage across every
+        # script before any AssetSpec gets built. See
+        # `_build_cross_file_extra_deps_map`'s docstring for why this can't
+        # be computed inline as each script gets its own asset built below.
+        cross_file_extra_deps = self._build_cross_file_extra_deps_map(
+            state.scripts, state.repo_path
+        )
+
+        # Build script assets (second pass)
         for script_info in state.scripts:
             if script_info.metadata and not script_info.metadata.enabled:
                 continue
 
-            result = self._build_script_asset_with_prefect_check(script_info, state.scripts, state.repo_path)
+            result = self._build_script_asset_with_prefect_check(
+                script_info, state.scripts, state.repo_path,
+                cross_file_extra_deps=cross_file_extra_deps,
+            )
 
             # Handle both single definitions and lists of definitions
             if isinstance(result, list):
@@ -2595,8 +2612,67 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
             dag_info, tasks_info, script_info, metadata, repo_path
         )
 
+    def _build_cross_file_extra_deps_map(
+        self, all_scripts: List[ScriptInfo], repo_path: str
+    ) -> Dict[str, List[str]]:
+        """First pass over every Prefect script to resolve cross-file subflow
+        lineage before any AssetSpec gets built (second pass, in
+        `_build_script_asset_with_prefect_check` below).
+
+        The gap this closes: script A imports a `@flow` (not a
+        `@materialize`) from script B, and B's own `@materialize` consumes
+        the argument A passed in. `parse_prefect_assets` discovers this edge
+        correctly while parsing A (that's the only place both sides of the
+        call are visible) but can't attach it to an AssetSpec there — the
+        target URI belongs to B's multi_asset, not A's. It hands the edge
+        back as `cross_file_extra_deps: {target_uri: [dep_uri, ...]}`
+        instead. This method parses every Prefect script once purely to
+        collect those maps and merge them into one global lookup, keyed by
+        target URI regardless of which script discovered the edge.
+        `_build_script_asset_with_prefect_check` then does the real
+        (second-pass) parse per script as before and merges in whatever
+        this map has for that script's own URIs.
+
+        Cheap to re-parse every script twice (AST parsing, not execution);
+        simpler and more robust than trying to cache/thread the first pass's
+        already-parsed results through to the second pass.
+        """
+        repo_root = Path(repo_path) if repo_path else None
+        global_map: Dict[str, List[str]] = {}
+        for script_info in all_scripts:
+            metadata = script_info.metadata or ScriptMetadata()
+            if not (
+                self.prefect_enabled
+                and metadata.script_type == "prefect"
+                and metadata.prefect_mapping
+                and metadata.prefect_mapping.enabled
+            ):
+                continue
+            try:
+                prefect_assets = self.prefect_parser.parse_assets(
+                    script_info.script_path, repo_root=repo_root
+                )
+            except Exception as e:
+                logger.debug(
+                    f"Cross-file pre-pass: parse_assets failed for "
+                    f"{script_info.name}: {e}"
+                )
+                continue
+            for target_uri, dep_uris in (
+                prefect_assets.get("cross_file_extra_deps") or {}
+            ).items():
+                bucket = global_map.setdefault(target_uri, [])
+                for dep_uri in dep_uris:
+                    if dep_uri not in bucket:
+                        bucket.append(dep_uri)
+        return global_map
+
     def _build_script_asset_with_prefect_check(
-        self, script_info: ScriptInfo, all_scripts: List[ScriptInfo], repo_path: str
+        self,
+        script_info: ScriptInfo,
+        all_scripts: List[ScriptInfo],
+        repo_path: str,
+        cross_file_extra_deps: Optional[Dict[str, List[str]]] = None,
     ):
         """Build asset with Prefect graph mapping check."""
         metadata = script_info.metadata or ScriptMetadata()
@@ -2668,6 +2744,7 @@ class ScriptGithubComponent(StateBackedComponent, BaseModel, Resolvable):
                             prefect_assets, flows[0], script_info, metadata,
                             dbt_project_path=self.dbt_project_path or None,
                             auto_freshness_policies=self.auto_freshness_policies,
+                            cross_file_extra_deps=cross_file_extra_deps,
                         )
                         if multi is not None:
                             return multi

@@ -125,9 +125,15 @@ file_overrides:
 
 > "This is the point: Prefect users don't have to duplicate their dep graph in a separate config to get lineage. The code IS the config — and 'the code' can span multiple files."
 
+**It even works through a cross-file subflow.** Bring up `materialize_cross_file_subflow_demo.py` and `materialize_cross_file_subflow_helpers.py`.
+
+> "This is the harder version of the last one: `enrich_orders` isn't a `@materialize` the caller imports directly — it's a `@flow` (a subflow) that WRAPS its own `@materialize`, `enriched_orders`, defined in the helper file. The caller only ever sees `enrich_orders`. The parser still figures out that `raw_orders` feeds into `enriched_orders` on the way in, and that `enriched_orders`'s output feeds `score_order_risk` on the way out — both edges cross the file boundary through a flow the caller never even names."
+
+> "Under the hood this needed a two-pass build: every script gets parsed once to work out which assets, owned by OTHER files, need an extra dep; then each script's own assets get built with those extra deps merged in. One block that used to need a manual yaml override now just falls out of the Python."
+
 **What's NOT captured (be honest about limits):**
 
-> "Two things worth naming so nobody's surprised: (1) **cross-file subflows** — importing a `@flow` from another file and calling it works for the parser's analysis, but if the subflow's *own* `@materialize` needs a dep from the caller's context, that dep won't be emitted (the target asset lives in the other file). Cross-file @materialize called DIRECTLY works fully; cross-file subflow-wrapped @materialize still needs `file_overrides.depends_on` (kind #3) as the escape hatch. (2) **Dynamic task calls** — `for name in dynamic_list: task(name)` won't infer per-item deps. Same fix — declare in yaml, or use `@materialize` explicitly with `asset_deps=[…]`."
+> "**Dynamic task calls** — `for name in dynamic_list: task(name)` won't infer per-item deps, since the parser works off the static AST, not a runtime trace. Declare it in yaml (`file_overrides.depends_on`, kind #3) instead, or use `@materialize` explicitly with `asset_deps=[…]`."
 
 ---
 
@@ -257,5 +263,7 @@ file_overrides:
 | `s3:/models/scores/parquet` | #2 AST-inferred | Implicit dep chain without `asset_deps=` |
 | `s3:/lake/curated/customers/parquet` | #2 through subflow | AST walker follows same-file subflow calls |
 | `s3://prod/lake/models/scores.parquet` | #2 across files | Import boundary crossed: `build_feature_matrix` lives in `materialize_cross_file_helpers.py` |
+| `s3://prod/lake/curated/orders/enriched_orders.parquet` ← `.../raw/orders.parquet` | #2 across files, through a subflow | Caller imports `enrich_orders` (a `@flow`), not the `@materialize` inside it — two-pass emit resolves the dep |
+| `s3://prod/lake/models/order_risk_scores.parquet` ← `.../enriched_orders.parquet` | #2 across files, through a subflow | Same pipeline, the *other* direction: the subflow's return value feeding a local consumer |
 | Anything with a freshness widget | — | Auto-derived SLA from `prefect.yaml` cron |
 | Any classic `@flow` op graph | #4 op-level | `@task` → `@op` with real data-flow edges from function-arg passing |

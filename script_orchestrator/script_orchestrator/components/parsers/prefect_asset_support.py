@@ -248,6 +248,33 @@ def _cross_file_discoveries(
         sub_flow_info = _analyze_flows(sub_tree, merged_sub_fn_to_uris)
         merged_sub_flow_info = {**sub_extra_info, **sub_flow_info}
 
+        # A subflow's `param_consumers` (its inner @materialize functions
+        # that consume the subflow's args) and `return_producer` (the inner
+        # @materialize whose output the subflow returns) both name functions
+        # that live ONLY in target_file — never themselves imported by the
+        # caller (only the subflow is) — so they'd never otherwise be
+        # resolvable via `fn_to_uris.get(name)` when the inference walker
+        # asks "what URI does this callee produce". Backfill them into
+        # `extra_fn_to_uris` under their OWN (original) name, using
+        # `merged_sub_fn_to_uris` while it's still in scope, so the
+        # walker's EXISTING lookups just work for both directions of
+        # subflow-crossing data flow: an argument flowing INTO the
+        # subflow's inner consumer, and the subflow's return value (from
+        # its own inner producer) flowing OUT to a local consumer. This is
+        # what closes the cross-file subflow lineage gap (see
+        # `parse_prefect_assets`'s `cross_file_extra_deps` for the other
+        # half — resolving these same names back to a URI when the LOCAL
+        # emit loop can't attach the dep because it doesn't own that URI).
+        def _backfill_subflow_names(info: Dict[str, Any]) -> None:
+            names = set()
+            for consumers in info.get("param_consumers", {}).values():
+                names.update(consumers)
+            if info.get("return_producer"):
+                names.add(info["return_producer"])
+            for name in names:
+                if name in merged_sub_fn_to_uris:
+                    extra_fn_to_uris.setdefault(name, merged_sub_fn_to_uris[name])
+
         # Remap discoveries under the LOCAL imported name(s).
         for alias in stmt.names:
             orig_name = alias.name
@@ -257,11 +284,14 @@ def _cross_file_discoveries(
                     extra_fn_to_uris.setdefault(k, v)
                 for k, v in merged_sub_flow_info.items():
                     extra_flow_info.setdefault(k, v)
+                    _backfill_subflow_names(v)
                 continue
             if orig_name in merged_sub_fn_to_uris:
                 extra_fn_to_uris[local_name] = merged_sub_fn_to_uris[orig_name]
             if orig_name in merged_sub_flow_info:
-                extra_flow_info[local_name] = merged_sub_flow_info[orig_name]
+                info = merged_sub_flow_info[orig_name]
+                extra_flow_info[local_name] = info
+                _backfill_subflow_names(info)
 
     return extra_fn_to_uris, extra_flow_info
 
@@ -403,7 +433,19 @@ def parse_prefect_assets(
           },
           ...
         ],
+        "cross_file_extra_deps": {        # dep edges for URIs owned by OTHER
+          "s3://target-uri": ["s3://source-uri", ...],   # scripts (see below)
+        },
       }
+
+    `cross_file_extra_deps` only has entries when a cross-file *subflow* is
+    called from this script (the caller imports a `@flow`, not the inner
+    `@materialize` directly) AND that subflow's own @materialize consumes an
+    argument this script passed in. The dep is computed correctly here (this
+    is the only place we have both sides of the call site), but its target
+    asset belongs to a DIFFERENT script's multi_asset — the caller
+    (`ScriptGithubComponent`) is responsible for merging these across every
+    script and re-attaching them when it emits the owning script's AssetSpec.
 
     Non-literal / dynamic URIs are skipped (with a debug log).
     """
@@ -582,7 +624,46 @@ def parse_prefect_assets(
             "properties": binding.get("properties", {}),
         })
 
-    return {"materialized": materialized_out, "external": external_out}
+    # ── Cross-file "orphaned" consumer deps ──────────────────────────────────
+    # `_infer_deps_from_flows` computes deps keyed by CONSUMER FUNCTION NAME,
+    # via `merged_fn_to_uris` (local + imported). When the consumer is a
+    # locally-defined @materialize function, the emit loop above attaches its
+    # deps directly (it's already in `materialized_raw`). But when the
+    # consumer is a subflow's OWN @materialize function living in another
+    # file — reached only via `_cross_file_discoveries` — it never appears in
+    # `materialized_raw` (that's THIS file's local functions only), so its
+    # computed deps would otherwise be silently dropped on the floor.
+    #
+    # We can't attach them to an AssetSpec here — that spec gets built when
+    # the OWNING file is parsed, not this one. Instead, resolve the consumer
+    # function name to its own URI(s) via `extra_fn_to_uris` (which
+    # `_cross_file_discoveries` now backfills for a subflow's inner
+    # consumer/producer names too, not just directly-imported ones — see
+    # its `_backfill_subflow_names`) and hand back a
+    # {target_uri: [dep_uri, ...]} map. `ScriptGithubComponent` merges this
+    # across every script into one global map in a first pass, then
+    # re-attaches it when it emits the AssetSpec for whichever script
+    # actually owns target_uri (second pass) — see its
+    # `_build_cross_file_extra_deps_map`.
+    cross_file_extra_deps: Dict[str, List[str]] = {}
+    local_fn_names = set(fn_to_uris.keys())
+    for fn_name, dep_uris in inferred_deps_per_fn.items():
+        if fn_name in local_fn_names:
+            continue  # already handled by the emit loop above
+        target_uris = extra_fn_to_uris.get(fn_name)
+        if not target_uris:
+            continue  # can't resolve fn_name to a URI — nothing to attach to
+        for target_uri in target_uris:
+            bucket = cross_file_extra_deps.setdefault(target_uri, [])
+            for dep_uri in dep_uris:
+                if dep_uri not in bucket:
+                    bucket.append(dep_uri)
+
+    return {
+        "materialized": materialized_out,
+        "external": external_out,
+        "cross_file_extra_deps": cross_file_extra_deps,
+    }
 
 
 def _infer_deps_from_flows(
@@ -1691,6 +1772,7 @@ def create_materialize_multi_asset(
     fake_prefect_factory,
     dbt_project_path: Optional[str] = None,
     auto_freshness_policies: bool = False,
+    cross_file_extra_deps: Optional[Dict[str, List[str]]] = None,
 ):
     """Build a Dagster @multi_asset (+ external AssetSpecs) for a Prefect script.
 
@@ -1708,6 +1790,14 @@ def create_materialize_multi_asset(
             assets get column schema + column-lineage metadata at build time.
         auto_freshness_policies: when True, attach a FreshnessPolicy inferred
             from the asset's cron schedule (if any).
+        cross_file_extra_deps: global {asset_uri: [dep_uri, ...]} map built by
+            `ScriptGithubComponent._build_cross_file_extra_deps_map` from every
+            script's `parse_prefect_assets(...)["cross_file_extra_deps"]`.
+            Closes the cross-file-subflow lineage gap: a dep discovered while
+            parsing the CALLING script, whose target is one of THIS script's
+            own @materialize URIs, gets merged into that URI's AssetSpec deps
+            here. None/omitted just means no cross-file subflow deps target
+            this script's assets (the common case).
 
     Returns a list [multi_asset_def, *external_asset_specs, *schedules],
     or None on failure. The router in the component classifies items by
@@ -1819,7 +1909,15 @@ def create_materialize_multi_asset(
     specs: List[AssetSpec] = []
     for pa in materialized:
         key = AssetKey(pa["asset_key_path"])
-        deps = [AssetKey(uri_to_asset_key_path(d)) for d in pa.get("asset_deps", [])]
+        dep_uris = list(pa.get("asset_deps", []))
+        # Cross-file subflow deps: computed by the CALLING script (it's the
+        # only place both sides of the call site are visible), targeting
+        # this URI. Merge them in here, at the point where this URI's own
+        # AssetSpec is actually built — see cross_file_extra_deps' docstring.
+        for extra_dep_uri in (cross_file_extra_deps or {}).get(pa["asset_key"], []):
+            if extra_dep_uri not in dep_uris:
+                dep_uris.append(extra_dep_uri)
+        deps = [AssetKey(uri_to_asset_key_path(d)) for d in dep_uris]
 
         props = pa.get("properties") or {}
         description = props.get("description") or f"Prefect asset: {pa['asset_key']}"

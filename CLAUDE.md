@@ -144,12 +144,12 @@ about lineage:
 1. **Explicit asset deps** — declared in Prefect source via
    `@materialize(asset_deps=[…])`.
 2. **AST-inferred asset deps** — parser walks the flow body call graph;
-   works through same-file subflows AND cross-file @materialize called
-   directly via `from x import fn`. Cross-file @materialize called
-   *through* a subflow (the subflow lives in file A, the caller's
-   context comes from file B) is a known partial-support case — the
-   analysis runs but the dep can't attach because the consumer asset
-   isn't owned by the caller. See "Cross-file lineage gap" below.
+   works through same-file subflows, cross-file @materialize called
+   directly via `from x import fn`, AND (since 2026-09-22) cross-file
+   **subflows** — the caller imports a `@flow` (not the inner
+   `@materialize`), and the subflow's own `@materialize` either
+   consumes an arg the caller passed OR its return value feeds a local
+   consumer. See "Cross-file subflow lineage" below for how this closed.
 3. **Operator-declared asset deps** — `file_overrides.depends_on:` in
    `defs.yaml`. No source-repo change required. This is the migration
    story that matters most for real Prefect estates.
@@ -157,35 +157,57 @@ about lineage:
    `@task` → `@op`; function-argument passing becomes real op DAG
    edges via a fake-Prefect-module monkey-patch.
 
-## Cross-file lineage gap (two-pass follow-up)
+## Cross-file subflow lineage (closed via two-pass emit)
 
-The cross-file work shipped in prefect_asset_support.py handles the
-common Prefect idiom: `from helpers import build_thing`, then call
-`build_thing()` inside a `@flow`. The AST call-graph walker follows
-the import and attaches the imported @materialize's URI as a dep on
-the caller's own @materialize output.
+The cross-file work originally shipped in prefect_asset_support.py
+handled the common Prefect idiom: `from helpers import build_thing`,
+then call `build_thing()` inside a `@flow`. The AST call-graph walker
+follows the import and attaches the imported @materialize's URI as a
+dep on the caller's own @materialize output — this works when the
+CALLER's own asset is the consumer.
 
-The remaining gap: cross-file **subflows** — the caller imports a
-`@flow` (not a `@materialize`), and the subflow's internal
-`@materialize` consumes the arg the caller passes. The parser DOES
-discover this via `_cross_file_discoveries` (extra_flow_info exposes
-the subflow's `param_consumers`), and the dep IS computed inside
-`_infer_deps_from_flows`. But the target asset (the subflow's own
-@materialize) isn't in the caller's `materialized_raw` — it lives in
-the imported file. Result: the analysis runs, produces the right
-answer, and then discards it because there's no local asset to attach
-it to.
+The gap that was open until 2026-09-22: cross-file **subflows** —
+the caller imports a `@flow` (not a `@materialize`), and the
+subflow's own `@materialize` either consumes an arg the caller passed
+(`param_consumers`) or produces the value the subflow returns
+(`return_producer`). The parser DOES discover both shapes via
+`_cross_file_discoveries` (`extra_flow_info` exposes both), and the
+dep IS computed correctly inside `_infer_deps_from_flows` — either
+directly (return_producer, reusing the existing @materialize-call
+resolution path) or via `_add_dep` (param_consumers). But in BOTH
+cases the target asset (the subflow's own @materialize) isn't in the
+caller's `materialized_raw` — it lives in the imported file. Before
+the fix, the analysis ran, produced the right answer, and then
+discarded it because there was no local asset to attach it to.
 
-Fix requires a **two-pass emit** at the ScriptGithubComponent level:
-1. First pass every script with `repo_root` set to build a global
-   `{asset_uri → List[extra_dep_uri]}` map from every caller's
-   discovered cross-file inferred deps.
-2. Second pass: when emitting each script's multi_asset, look up any
-   of its own URIs in the global map and merge those extra deps into
-   the AssetSpec.
+Fixed with a **two-pass emit** at the `ScriptGithubComponent` level
+(`_build_cross_file_extra_deps_map`, called once in
+`build_defs_from_state` before the main per-script loop):
+1. First pass: every Prefect script gets parsed once with `repo_root`
+   set. `parse_prefect_assets` now also returns
+   `cross_file_extra_deps: {asset_uri → [extra_dep_uri, …]}` — deps
+   computed for a consumer function that ISN'T locally owned, with the
+   consumer resolved to its own URI via `extra_fn_to_uris` (which
+   `_cross_file_discoveries` backfills for a subflow's inner
+   consumer/producer names too, not just directly-imported ones — see
+   `_backfill_subflow_names`). Every script's contribution gets merged
+   into one global map.
+2. Second pass (the existing per-script loop, unchanged in shape):
+   `create_materialize_multi_asset` takes the global map as
+   `cross_file_extra_deps` and merges in whatever it has for each of
+   ITS OWN URIs when building that script's AssetSpecs.
 
-Until then, the workaround for cross-file subflow patterns is kind
-#3 (`file_overrides.depends_on` in defs.yaml).
+Demo pair: `materialize_cross_file_subflow_demo.py` +
+`materialize_cross_file_subflow_helpers.py` in
+`example_scripts/prefect_examples/` — chains a local @materialize →
+an imported subflow wrapping its own @materialize → a local
+@materialize, exercising both the param_consumers and return_producer
+shapes in one pipeline. Unit tests in
+`script_orchestrator_tests/test_prefect_cross_file_lineage.py`.
+
+`file_overrides.depends_on` (kind #3) still works as a manual
+override for anything the parser can't infer (e.g. dynamic task
+calls) — it's no longer the *only* option for cross-file subflows.
 
 ## Things the user has corrected me on
 

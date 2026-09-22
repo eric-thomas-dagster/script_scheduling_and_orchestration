@@ -181,6 +181,7 @@ class PrefectParser(BaseParser):
         metadata: Any,
         dbt_project_path: Optional[str] = None,
         auto_freshness_policies: bool = False,
+        cross_file_extra_deps: Optional[Dict[str, List[str]]] = None,
     ):
         """Build a Dagster @multi_asset (+ external upstream AssetSpecs +
         deployment ScheduleDefinitions).
@@ -192,6 +193,11 @@ class PrefectParser(BaseParser):
             metadata on those assets at build time.
           auto_freshness_policies: when True, attach a FreshnessPolicy
             inferred from the asset's cron schedule (from prefect.yaml).
+          cross_file_extra_deps: global {asset_uri: [dep_uri, ...]} map from
+            `ScriptGithubComponent._build_cross_file_extra_deps_map` — closes
+            the cross-file-subflow lineage gap. See
+            `create_materialize_multi_asset`'s own docstring for the full
+            explanation.
         """
         return create_materialize_multi_asset(
             prefect_assets=prefect_assets,
@@ -201,6 +207,7 @@ class PrefectParser(BaseParser):
             fake_prefect_factory=self._create_fake_prefect_module,
             dbt_project_path=dbt_project_path,
             auto_freshness_policies=auto_freshness_policies,
+            cross_file_extra_deps=cross_file_extra_deps,
         )
 
     def parse_flow(self, script_path: Path) -> Tuple[List[Dict], List[Dict]]:
