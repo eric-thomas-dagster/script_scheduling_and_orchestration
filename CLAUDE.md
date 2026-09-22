@@ -45,8 +45,12 @@ rotated tokens. If a `401 Unauthorized` comes back, don't guess at other
 tokens — ask the user which env to source.
 
 **How long:** 8–12 minutes end-to-end. Bulk of it is `uv sync` in the
-Docker builder + `dbt deps/seed/run/docs generate` on jaffle_shop
-(happens at image build time, see `Dockerfile`).
+build container + `dbt deps/seed/run/docs generate` on jaffle_shop
+(happens at image build time). **Correction (2026-09-22):** there is no
+`Dockerfile` committed anywhere in this repo (checked git history —
+never existed). The build is Dagster+ Serverless's own managed build
+process (`dg`/`dagster-cloud-cli`), not a repo-owned Docker build. Don't
+go looking for a Dockerfile to explain build behavior — there isn't one.
 
 **Where output lands:** background task logs are truncated to the last
 few lines (see `tail -5 /private/tmp/claude-501/.../tasks/<id>.output`).
@@ -65,23 +69,28 @@ state is 15–20 KB.
 
 ## How the script-orchestrator dep is wired
 
-`dagster_orchestrator/pyproject.toml` pins `script-orchestrator[prefect]`
-via git URL:
+**Correction (2026-09-22):** this section previously described a git-URL
+pin (`{ git = "...", subdirectory = "script_orchestrator", branch =
+"master" }`) plus a commit-push-then-`uv lock --upgrade-package` workflow.
+That's not what's actually in `dagster_orchestrator/pyproject.toml` —
+hasn't been since `ab2f27c`, well before this note was written. The real
+current pin is a **local path**:
 
 ```toml
 [tool.uv.sources]
-script-orchestrator = { git = "https://github.com/eric-thomas-dagster/script_scheduling_and_orchestration", subdirectory = "script_orchestrator", branch = "master" }
+script-orchestrator = { path = "../script_orchestrator" }
 ```
 
-Workflow for pushing an upstream fix:
-1. Edit `script_orchestrator/**`.
-2. Commit + push to `master` on this repo.
-3. `cd dagster_orchestrator && uv lock --upgrade-package script-orchestrator`
-   → confirms new SHA lands in `uv.lock`.
-4. Redeploy.
-
-The lock upgrade step is easy to forget; without it, the Docker build
-reuses the old cached SHA.
+This means edits under `script_orchestrator/**` are picked up directly —
+no separate lock-upgrade step, no SHA to bump. What's genuinely
+**unverified** (checked 2026-09-22, blocked on both Dagster+ MCP auth and
+a local `DAGSTER_CLOUD_API_TOKEN` — neither was available): whether
+Dagster+ Serverless's build actually resolves a `path = "../..."` source
+that lives *outside* `dagster_orchestrator/`'s own directory, or whether
+the last successful deploy predates this pin, or relies on some
+build-context behavior not confirmed here. Before trusting this pin
+blindly, check the deployment's actual health in Dagster+ (or ask Eric —
+he may already know why it's set up this way).
 
 ## `_build_dbt_defs` (formerly `_build_cosmos_dbt_defs`)
 
@@ -122,19 +131,37 @@ it alongside their Dagster code location. Don't hardcode `/app/...` in
 defs.yaml — it works but it's container-specific and reads badly to a
 customer copying the config.
 
-## State persistence lives in /tmp (temporary)
+## State persistence lives in /tmp
 
-`build_state.py` writes to `/tmp/dagster_orchestrator_prefect_demos/` and
-`/tmp/dagster_orchestrator_prefect_materialize_demos/`. The `Dockerfile`
-COPYs those dirs from the builder into the runtime image. Each
-`defs/*/prefect_(demos|materialize_demos)/__init__.py` bypasses the
-`StateBackedComponent` framework entirely and calls
-`build_defs_from_state` directly with a hand-rolled `_Ctx()` whose
-`.path` points at the /tmp state dir.
+**Correction (2026-09-22):** this section previously claimed a
+`build_state.py` file and said BOTH `prefect_demos` and
+`prefect_materialize_demos` bypass `StateBackedComponent` via a
+hand-rolled `_Ctx()`. Checked directly — neither is true anymore (if it
+ever was):
 
-Follow-up worth doing: move state out of /tmp into somewhere under
-`/app`. `/tmp` for persistent app state is a code smell and confuses
-anyone reading the deploy setup.
+- `build_state.py` doesn't exist anywhere in this repo.
+- Only `defs/prefect_demos/__init__.py` hand-rolls a `_Ctx()` pointing at
+  `/tmp/dagster_orchestrator_prefect_demos/state.json` and calls
+  `build_defs_from_state` directly (bypassing the framework — this part
+  is accurate, just only for this one module).
+- `defs/prefect_materialize_demos/` has **no `__init__.py` at all** — just
+  `defs.yaml`. It goes through the standard `StateBackedComponent` /
+  `dg` machinery (`DefsStateConfigArgs.local_filesystem()`,
+  `management_type=LOCAL_FILESYSTEM`), not a hand-rolled override.
+
+Both still appear to land under a `/tmp/dagster_orchestrator_<key>/`
+path in practice (see the deploy log tail above), but for
+`prefect_materialize_demos` that's the framework's own LOCAL_FILESYSTEM
+state-management behavior, not something this repo's code chose — moving
+it would mean understanding and likely overriding the framework's
+default state directory, not just editing one `__init__.py`.
+
+**On the original follow-up ("move state out of /tmp"):** not attempted.
+`/tmp` may not be pure code smell here — Dagster+ Serverless containers
+commonly restrict writes to `/tmp`-style scratch space, so relocating
+state under the app directory could break the one thing that currently
+works. Verify container writability (via an actual deploy, or ask Eric)
+before changing this.
 
 ## The four kinds of lineage (canonical framing)
 
